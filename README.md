@@ -58,29 +58,56 @@ At most 64 slices a sample.
 
 ## Install
 
-You need Python 3.9 or newer, [elekloader](https://github.com/irpina/elekloader),
-the stock `Digitakt_OS1.53.syx` Elektron publishes, and two mods:
-`core-2.0a.elemod` (from elekloader, `mods/core`) and
-`digislicer-1.0.elemod` (from this repository's releases, or built as
-below).
+You need three things:
+- **elekloader**:
+  - **Windows:** download `elekloader-<version>-windows.zip` from
+    [elekloader's releases](https://github.com/irpina/elekloader/releases/latest),
+    unzip it and run `elekloader.exe`. The core mod, which every linkable mod
+    needs, is built in.
+  - **Other systems:** run elekloader from source with Python 3.9 or newer
+    (see [its README](https://github.com/irpina/elekloader#install)). There
+    you also need `core-2.0a.elemod`, which is attached to this repository's
+    releases too.
+- **This mod:** `digislicer-1.0.elemod`, from
+  [this repository's releases](https://github.com/irpina/digislicer/releases/latest).
+- **The stock OS file:** `Digitakt_OS1.53.syx`, from
+  [Elektron's Digitakt downloads](https://www.elektron.se/support-downloads/digitakt).
+  The mod is for the Digitakt mk1 on OS 1.53 only; elekloader recognises
+  the file by its hash.
 
-1. In elekloader's window: **Install from file** both mods, tick them,
-   choose your stock file, **Build firmware**. Or on the command line:
+Then build your OS in elekloader's window:
 
-   ```bash
-   python -m elekloader.patch --stock Digitakt_OS1.53.syx \
-       --mod core-2.0a.elemod --mod digislicer-1.0.elemod \
-       --out Digitakt_OS1.53-slicer.syx --version SL10
-   ```
+1. **Change stock firmware...** (top right): choose `Digitakt_OS1.53.syx`.
+2. **+ Install from file...**: choose `digislicer-1.0.elemod`. From source,
+   install `core-2.0a.elemod` the same way.
+3. **Tick digislicer.** core is ticked with it. The check below the list should
+   say "No conflicts ... Ready to build". To add [digihealth](https://github.com/irpina/digihealth) (FAST AUDIO and SYSTEM INFO), install and tick it as well.
+4. **OS version shown**: the 4 characters the unit will show, for example
+   `SL10`.
+5. **BUILD FIRMWARE**, and save the `.syx`. elekloader verifies it before
+   writing it.
 
-2. Send the `.syx` to the unit the way you send any OS update.
+Flash it with Elektron Transfer, as for any OS update
+([Elektron's instructions](https://support.elektron.se/support/solutions/articles/43000662890-how-to-update-your-device)):
+1. Connect the unit over USB.
+2. In Transfer, select the unit and **Connect**.
+3. Drag the `.syx` onto **Drop files here**.
+4. Press **YES** on the unit.
 
-**Recovery:** hold FUNC while powering on for the startup menu, then send
-the stock OS file. elekloader never touches the bootloader, so the stock
-file always restores the unit.
+Don't turn it off until the upgrade is done.
 
-digislicer combines with [digihealth](https://github.com/irpina/digihealth)
-(FAST AUDIO and SYSTEM INFO): add its `.elemod` to the same build.
+Or on the command line (elekloader from source):
+
+```bash
+python -m elekloader.patch --stock Digitakt_OS1.53.syx \
+    --mod core-2.0a.elemod --mod digislicer-1.0.elemod \
+    --out Digitakt_OS1.53-slicer.syx --version SL10
+```
+
+**Recovery:** elekloader never changes the bootloader, so the stock OS
+file always restores the unit. Hold **FUNC** while powering on for the
+startup menu, and press **TRIG 4** for OS UPGRADE. Then send the stock
+`.syx` with Transfer's legacy OS upgrade mode.
 
 ## Build it from source
 
