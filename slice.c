@@ -1,0 +1,1335 @@
+/* slice.c: automatic and custom slicing for the SLICE machine (GRID = AUTO).
+ *
+ * The stock SLICE machine (machine type 3) divides a sample into an equal
+ * grid of 4..64 slices: its window function 0x40074df2 looks slice k up in
+ * a table of 256 positions per sample slot (0x402F9380 + 0x400 * slot),
+ * built at sample load. GRID = 5 ("AUTO", which stock firmware clamps to
+ * 64) makes our hook in sysinfo.s (slice_win) call slice_auto_window
+ * instead, which reads this file's table of slice starts for the slot.
+ *
+ * A slot's table comes from, in order:
+ *   - the store of custom slice points (the slice editor's, kept per
+ *     sample: its content hash and length), or
+ *   - the analysis of the sample's transients.
+ *
+ * slice_tick runs from the 30 Hz compose hook (the UI task). It does
+ * nothing until an AUTO voice first asks for a table (slc_any), so a song
+ * with no AUTO track keeps the stock timing. Then it drops the table of
+ * any slot whose sample changed, and fills the tables AUTO voices asked
+ * for (slc_want): from the store at once, or by analysing a bounded
+ * number of samples per tick. slc_n[slot] is written last and zeroed
+ * first, so the render sees a whole table or none (and plays the 64 grid).
+ */
+typedef unsigned char u8;
+typedef signed char s8;
+typedef short s16;
+typedef unsigned short u16;
+typedef unsigned int u32;
+typedef int s32;
+typedef unsigned long long u64;
+
+#define SLOTS     128
+#define MAXSL     64
+#define SMP_TAB   0x403193A0u      /* +16 slot: PCM, rate, length, ratio */
+#define REF_TAB   0x421F230Cu      /* +16 slot: the loader's reference; +4 content hash */
+#define VOICE_SLOT 0x8000EE20u     /* V(v) + 0x5C, V = 0x8000EDC4 + 94 v */
+
+#define HOP       128              /* samples per envelope hop (2.7 ms at 48 kHz) */
+#define BUDGET    16384            /* samples analysed per tick */
+#define GAP_HOPS  18               /* at least ~48 ms between slice starts */
+#define MAXCAND   256
+#define MINSL     64               /* the shortest slice the editor allows */
+
+volatile u8 slc_n[SLOTS];          /* slices in the slot's table, 0 = none */
+volatile u8 slc_want[SLOTS];       /* set by the render (slice_win): an AUTO voice
+                                      started on this slot with no table */
+volatile u8 slc_any;               /* set by any SLICE voice (slice_win): until then
+                                      slice_tick does nothing, so a song with no
+                                      SLICE track runs with the stock timing */
+volatile u8 slc_cust[SLOTS];       /* the slot's table is the sample's own slice
+                                      list: SLICE voices play it whatever GRID says */
+u32 slc_pts[SLOTS][MAXSL];         /* slice starts, ascending, in samples */
+static u32 slc_key[SLOTS][3];      /* PCM address, length, hash last seen */
+static u8 slc_stale[SLOTS];        /* the sample changed since it was analysed */
+
+/* ---- the store of custom slice points ------------------------------------ */
+#define NREC      128
+struct slc_rec {
+    u32 hash, len;                 /* the sample: content hash, length in samples */
+    u32 n;                         /* 0: free */
+    u32 pts[MAXSL];
+};
+/* The store is kept on the +Drive (ekFS) as two files of this image,
+ * /cfw/slices.a and /cfw/slices.b, written in turn (seq odd: a, even: b):
+ * a save cut short by power loss leaves the other one whole, and the
+ * loader takes the valid one with the higher seq. Each save rewrites a
+ * file in place with one write (open "w" on an existing file keeps its
+ * size and blocks): no directory change, no allocation. The 16 bytes of
+ * padding keep the whole image in a USB listing, which reports size - 16. */
+#define SLC_MAGIC 0x44545331u      /* "DTS1" */
+struct slc_file {
+    u32 magic, nrec, seq, sum;
+    struct slc_rec rec[NREC];
+    u8 pad[16];
+};
+struct slc_file slc_img;
+#define slc_store (slc_img.rec)
+volatile u32 slc_store_dirty;      /* changed since it was saved */
+
+static struct slc_rec *store_find(u32 hash, u32 len)
+{
+    u32 i;
+    for (i = 0; i < NREC; i++)
+        if (slc_store[i].n && slc_store[i].hash == hash && slc_store[i].len == len)
+            return &slc_store[i];
+    return 0;
+}
+
+static struct slc_rec *store_put(u32 hash, u32 len, u32 n, const u32 *pts)
+{
+    struct slc_rec *r = store_find(hash, len);
+    u32 i;
+    if (!r)
+        for (i = 0; i < NREC; i++)
+            if (!slc_store[i].n) {
+                r = &slc_store[i];
+                break;
+            }
+    if (!r)
+        return 0;                   /* full */
+    r->hash = hash;
+    r->len = len;
+    for (i = 0; i < n; i++)
+        r->pts[i] = pts[i];
+    r->n = n;
+    slc_store_dirty = 1;
+    return r;
+}
+
+static void store_drop(u32 hash, u32 len)
+{
+    struct slc_rec *r = store_find(hash, len);
+    if (r) {
+        r->n = 0;
+        slc_store_dirty = 1;
+    }
+}
+
+/* ---- the store on the +Drive ------------------------------------------------ */
+/* The firmware's own ekFS calls (they write straight to the card: no sync
+ * needed). They take the filesystem's mutex themselves, except lookup; we
+ * call them from the UI task, only while that mutex is free (a sample load
+ * holds it for its whole read) and the drive is mounted. */
+typedef struct { u32 inode, pos, writable, open; } ekfile;
+#define EK_OPEN    ((s32 (*)(const char *, const char *, ekfile *))0x400cf178)
+#define EK_READ    ((s32 (*)(void *, s32, ekfile *))0x400ceebe)
+#define EK_WRITE   ((s32 (*)(const void *, s32, ekfile *))0x400cef1e)
+#define EK_CLOSE   ((s32 (*)(ekfile *))0x400cf136)
+#define EK_MKDIR   ((s32 (*)(const char *))0x400cde0c)
+#define EK_LOOKUP  ((s32 (*)(const char *, u32 *, s32, s32, s32))0x400d0aa4)
+#define EK_LOCK    ((void (*)(void *))0x40001884)
+#define EK_UNLOCK  ((void (*)(void *))0x400019b6)
+#define EK_MUTEX   ((void *)0x42685690)
+#define EK_OWNER   (*(volatile u32 *)0x42685690)
+#define EK_MOUNTED (*(volatile u32 *)0x420edc50)
+
+static const char *const slc_path[2] = { "/cfw/slices.b", "/cfw/slices.a" };
+static s32 slc_loaded;             /* 1: loaded (or found none) */
+static s32 ed_is_open(void);
+static s32 slc_save_wait;          /* ticks to wait before saving */
+u32 slc_saves, slc_save_fail;      /* counts, for the USB PEEK */
+
+static u32 img_sum(void)
+{
+    const u32 *w = (const u32 *)slc_img.rec;
+    u32 n = sizeof slc_img.rec / 4, s = 0x5eed1234u, i;
+    for (i = 0; i < n; i++)
+        s = ((s << 5) | (s >> 27)) ^ w[i];
+    return s;
+}
+
+static s32 ek_ready(void)
+{
+    return EK_MOUNTED != 0 && EK_OWNER == 0;
+}
+
+/* Read one file into slc_img; 1 if it is whole and valid. */
+static s32 img_read(const char *path)
+{
+    ekfile f;
+    s32 got;
+    if (EK_OPEN(path, "r", &f) != 0)
+        return 0;
+    got = EK_READ(&slc_img, sizeof slc_img, &f);
+    EK_CLOSE(&f);
+    return got >= (s32)(sizeof slc_img - sizeof slc_img.pad) && slc_img.magic == SLC_MAGIC
+           && slc_img.nrec == NREC && slc_img.sum == img_sum();
+}
+
+/* Load the store: the valid file with the higher seq, else an empty one.
+ * Returns 0 if the drive is busy (try again later). */
+static s32 store_load(void)
+{
+    s32 ok0, ok1, pick;
+    u32 seq0, seq1, k;
+    if (!ek_ready())
+        return 0;
+    ok0 = img_read(slc_path[0]);
+    seq0 = slc_img.seq;
+    ok1 = img_read(slc_path[1]);             /* slc_img now holds file 1 */
+    seq1 = slc_img.seq;
+    if (ok0 && ok1)
+        pick = seq1 > seq0 ? 1 : 0;
+    else
+        pick = ok1 ? 1 : ok0 ? 0 : -1;
+    if (pick == 0 && !img_read(slc_path[0]))
+        pick = -1;
+    if (pick < 0) {                          /* none: start empty */
+        for (k = 0; k < NREC; k++)
+            slc_img.rec[k].n = 0;
+        slc_img.seq = 0;
+    }
+    slc_img.magic = SLC_MAGIC;
+    slc_img.nrec = NREC;
+    slc_loaded = 1;
+    return 1;
+}
+
+/* Save the store over the older file (seq + 1 decides which). */
+static s32 store_save(void)
+{
+    ekfile f;
+    u32 ino, seq = slc_img.seq + 1;
+    s32 r, w;
+    if (!ek_ready())
+        return 0;
+    EK_LOCK(EK_MUTEX);
+    r = EK_LOOKUP("/cfw", &ino, 0, 0, 0);
+    EK_UNLOCK(EK_MUTEX);
+    if (r == 0x19 && EK_MKDIR("/cfw") != 0)
+        return -1;
+    slc_img.magic = SLC_MAGIC;
+    slc_img.nrec = NREC;
+    slc_img.seq = seq;
+    slc_img.sum = img_sum();
+    if (EK_OPEN(slc_path[seq & 1], "w", &f) != 0)
+        return -1;
+    w = EK_WRITE(&slc_img, sizeof slc_img, &f);
+    EK_CLOSE(&f);
+    return w == (s32)sizeof slc_img ? 1 : -1;
+}
+
+/* From slice_tick: load on first use, save a second after the last edit. */
+static void store_tick(void)
+{
+    if (!slc_loaded) {
+        store_load();
+        return;
+    }
+    if (!slc_store_dirty || ed_is_open())
+        return;
+    if (slc_save_wait > 0) {
+        slc_save_wait--;
+        return;
+    }
+    switch (store_save()) {
+    case 1:
+        slc_store_dirty = 0;
+        slc_saves++;
+        break;
+    case -1:
+        slc_save_fail++;
+        slc_save_wait = 300;                 /* a failed save: try again in 10 s */
+        break;
+    default:                                 /* busy: next tick */
+        break;
+    }
+}
+
+/* ---- transient analysis ------------------------------------------------------ */
+struct an {
+    s32 active;
+    s32 slot;
+    const s16 *pcm;
+    u32 len, key[3];
+    s32 phase;                     /* 0 peak, 1 onsets, 2 done */
+    u32 pos;
+    s32 peak;
+    s32 bg;                        /* background level x 256 */
+    s32 prev;
+    s32 hop_max;
+    u32 hop_n;
+    s32 last_onset;                /* hop index */
+    u32 hop;
+    u32 ncand;
+    u32 cand_pos[MAXCAND];
+    s32 cand_str[MAXCAND];
+};
+static struct an job;              /* the background analysis */
+static u32 scan;                   /* the next slot slice_tick looks at */
+
+static inline s32 absv(s32 x) { return x < 0 ? -x : x; }
+
+static void slot_info(u32 slot, u32 *pcm, u32 *len, u32 *hash)
+{
+    const volatile u32 *e = (const volatile u32 *)(SMP_TAB + 16 * slot);
+    const volatile u32 *r = (const volatile u32 *)(REF_TAB + 16 * slot);
+    *pcm = e[0];
+    *len = e[2];
+    *hash = r[1];
+}
+
+static s32 slot_ok(u32 pcm, u32 len)
+{
+    return pcm >= 0x40000000u && pcm < 0x50000000u && len >= 2 * HOP && len <= 0x02000000u;
+}
+
+/* Where a transient at hop h starts: the first sample of hops h-1..h whose
+ * level reaches a quarter of the hop's peak, moved back to the zero
+ * crossing before it (within 256 samples). */
+static u32 refine(const s16 *x, u32 len, u32 h, s32 hmax)
+{
+    u32 a = h > 0 ? (h - 1) * HOP : 0, b = (h + 1) * HOP, i, j;
+    s32 thr = hmax >> 2;
+    if (b > len)
+        b = len;
+    for (i = a; i < b; i++)
+        if (absv(x[i]) >= thr)
+            break;
+    if (i >= b)
+        i = h * HOP;
+    for (j = i; j > 0 && i - j < 256; j--)
+        if ((x[j - 1] <= 0 && x[j] > 0) || (x[j - 1] >= 0 && x[j] < 0) || x[j] == 0)
+            break;
+    return j;
+}
+
+static void an_start(struct an *a, u32 slot, u32 pcm, u32 len, u32 hash)
+{
+    a->slot = slot;
+    a->pcm = (const s16 *)pcm;
+    a->len = len;
+    a->key[0] = pcm;
+    a->key[1] = len;
+    a->key[2] = hash;
+    a->phase = 0;
+    a->pos = 0;
+    a->peak = 0;
+    a->bg = 0;
+    a->prev = 0;
+    a->hop_max = 0;
+    a->hop_n = 0;
+    a->last_onset = -GAP_HOPS;
+    a->hop = 0;
+    a->ncand = 0;
+    a->active = 1;
+}
+
+/* Up to `budget` samples of work; returns 1 when the analysis is done. */
+static s32 an_step(struct an *a, u32 budget)
+{
+    const s16 *x = a->pcm;
+    u32 end = a->pos + budget, i;
+    if (end > a->len)
+        end = a->len;
+    if (a->phase == 0) {
+        s32 peak = a->peak;
+        for (i = a->pos; i < end; i++) {
+            s32 v = absv(x[i]);
+            if (v > peak)
+                peak = v;
+        }
+        a->peak = peak;
+        a->pos = end;
+        if (end >= a->len) {
+            a->phase = 1;
+            a->pos = 0;
+        }
+        return 0;
+    }
+    if (a->phase == 1) {
+        s32 floor = a->peak / 20 + 1;
+        for (i = a->pos; i < end; i++) {
+            s32 v = absv(x[i]);
+            if (v > a->hop_max)
+                a->hop_max = v;
+            if (++a->hop_n < HOP)
+                continue;
+            {
+                s32 e = a->hop_max, bg = a->bg >> 8;
+                if (e > floor && e > 2 * bg + 1 && e > a->prev
+                        && (s32)a->hop - a->last_onset >= GAP_HOPS && a->hop > 0) {
+                    u32 p = refine(x, a->len, a->hop, e);
+                    s32 str = e - bg;
+                    if (a->ncand < MAXCAND) {
+                        a->cand_pos[a->ncand] = p;
+                        a->cand_str[a->ncand++] = str;
+                    } else {                /* full: replace the weakest */
+                        u32 w = 0, c;
+                        for (c = 1; c < MAXCAND; c++)
+                            if (a->cand_str[c] < a->cand_str[w])
+                                w = c;
+                        if (str > a->cand_str[w]) {
+                            a->cand_pos[w] = p;
+                            a->cand_str[w] = str;
+                        }
+                    }
+                    a->last_onset = a->hop;
+                }
+                a->bg += ((e << 8) - a->bg) >> 3;
+                a->prev = e;
+                a->hop_max = 0;
+                a->hop_n = 0;
+                a->hop++;
+            }
+        }
+        a->pos = end;
+        if (end >= a->len)
+            a->phase = 2;
+        return 0;
+    }
+    return 1;
+}
+
+/* The finished analysis as a table: 0, then the strongest MAXSL-1
+ * candidates, in order, at least a hop apart. Returns the count. */
+static u32 an_table(struct an *a, u32 *pts)
+{
+    u32 n = 0, i, k;
+    u8 used[MAXCAND];
+    for (i = 0; i < a->ncand; i++)
+        used[i] = 0;
+    pts[n++] = 0;
+    while (n < MAXSL) {
+        s32 best = -1, bs = -1;
+        for (i = 0; i < a->ncand; i++)
+            if (!used[i] && a->cand_str[i] > bs) {
+                bs = a->cand_str[i];
+                best = i;
+            }
+        if (best < 0)
+            break;
+        used[best] = 1;
+        pts[n++] = a->cand_pos[best];
+    }
+    for (i = 1; i < n; i++)                 /* insertion sort */
+        for (k = i; k > 0 && pts[k - 1] > pts[k]; k--) {
+            u32 t = pts[k];
+            pts[k] = pts[k - 1];
+            pts[k - 1] = t;
+        }
+    for (i = k = 1; i < n; i++)             /* drop duplicates and a start at 0 */
+        if (pts[i] > pts[k - 1] + HOP)
+            pts[k++] = pts[i];
+    return k;
+}
+
+/* Publish a table for a slot, if its sample is still the one given. */
+static void publish(u32 slot, const u32 *key, u32 n, const u32 *pts)
+{
+    u32 pcm, len, hash, i;
+    slot_info(slot, &pcm, &len, &hash);
+    if (pcm != key[0] || len != key[1] || hash != key[2])
+        return;
+    slc_n[slot] = 0;
+    for (i = 0; i < n; i++)
+        slc_pts[slot][i] = pts[i];
+    slc_n[slot] = (u8)n;
+}
+
+void slc_ui_tick(void);
+
+void slice_tick(void)
+{
+    u32 n, pcm, len, hash;
+#ifdef SLICE_NOTICK
+    return;                                  /* test builds: no analysis */
+#endif
+    if (!slc_any)
+        return;
+    if (ed_is_open())
+        slc_ui_tick();                       /* the editor's knobs (their dead zone) */
+    store_tick();                            /* the custom points on the +Drive */
+    if (!slc_loaded)
+        return;                              /* none filled before they are known */
+    /* Any slot whose sample changed loses its table at once (cheap: 128 x 3
+     * reads), so the render never uses a stale one. */
+    for (n = 0; n < SLOTS; n++) {
+        slot_info(n, &pcm, &len, &hash);
+        if (pcm == slc_key[n][0] && len == slc_key[n][1] && hash == slc_key[n][2])
+            continue;
+        slc_n[n] = 0;
+        slc_cust[n] = 0;
+        slc_key[n][0] = pcm;
+        slc_key[n][1] = len;
+        slc_key[n][2] = hash;
+        slc_stale[n] = 1;
+    }
+    if (job.active) {
+        if (an_step(&job, BUDGET)) {
+            u32 pts[MAXSL], cnt = an_table(&job, pts);
+            publish(job.slot, job.key, cnt, pts);
+            job.active = 0;
+        }
+        return;
+    }
+    /* A sample with its own slice list gets it in every slot at once (any
+     * SLICE track plays it); what AUTO tracks asked for is analysed. */
+    for (n = 0; n < SLOTS; n++) {
+        u32 s = scan;
+        struct slc_rec *r;
+        scan = (scan + 1) & (SLOTS - 1);
+        if (!slc_stale[s])
+            continue;
+        if (!slot_ok(slc_key[s][0], slc_key[s][1])) {
+            slc_stale[s] = 0;
+            slc_cust[s] = 0;
+            continue;                        /* empty or not in the pool: nothing to slice */
+        }
+        r = store_find(slc_key[s][2], slc_key[s][1]);
+        if (r) {
+            slc_stale[s] = 0;
+            publish(s, slc_key[s], r->n, r->pts);
+            slc_cust[s] = 1;
+            continue;
+        }
+        slc_cust[s] = 0;
+        if (!slc_want[s])
+            continue;                        /* stays stale: analysed if AUTO asks */
+        slc_stale[s] = 0;
+        an_start(&job, s, slc_key[s][0], slc_key[s][1], slc_key[s][2]);
+        return;
+    }
+}
+
+/* The SLICE window for GRID = AUTO, called by slice_win (sysinfo.s) with
+ * 0x40074df2's arguments once it has checked the slot has a table: p =
+ * the voice's parameters (+2 PLAY, +8 SLICE, +10 LEN, high bytes), note =
+ * the trig's note << 16, len = the sample's length, v = the voice. Returns
+ * d0 = where the voice starts, d1 = where it ends, as the original: slice
+ * k = SLICE - 1 (wrapped), or the note (- 12, wrapped) when SLICE is 0;
+ * LEN more slices after it; reversed for PLAY 0 and 1. */
+u64 slice_auto_window(const s8 *p, u32 note, u32 len, s32 v)
+{
+    u32 slot = *(const volatile u8 *)(VOICE_SLOT + 94 * v);
+    s32 n = slc_n[slot], sel = (u8)p[8], k, L = p[10], idx;
+    u32 from, to;
+    extern volatile s32 slc_aud_voice, slc_aud_slice;
+    extern void slc_dbg_win(s32 v, s32 sel, s32 aud);
+    s32 aud = slc_aud_voice == v;
+    if (aud) {                             /* the editor's audition: while a trig */
+        sel = slc_aud_slice % n + 1;       /* key is held, every start of that */
+        L = 0;                             /* track's voice plays its slice */
+    }
+    slc_dbg_win(v, sel, aud);
+    /* SLICE 1..: slice (SLICE - 1) wrapped to the slices found, where the
+     * grid clamps: how many slices AUTO finds depends on the sample, and
+     * the lock helper's random locks run to 4 << GRID = 128. */
+    if (sel > 0)
+        k = (sel - 1) % n;
+    else {
+        k = ((s32)(s16)(note >> 16) - 12) % n;
+        if (k < 0)
+            k += n;
+    }
+    if (L > 63)
+        L = 63;
+    idx = k + L + 1;
+    from = slc_pts[slot][k];
+    to = idx >= n ? len : slc_pts[slot][idx < 0 ? 0 : idx];
+    if ((u8)p[2] > 1)
+        return ((u64)from << 32) | to;
+    return ((u64)to << 32) | from;
+}
+
+/* ---- the slice editor's model ------------------------------------------------- */
+/* The editor works on a copy of one slot's table. Its view (drawn by the UI
+ * side, sysinfo.s / the editor view) is a window [v0, v1) of the sample,
+ * shown as WCOLS columns of min/max peaks. */
+#define WCOLS 128
+struct slc_ed {
+    s32 open;
+    u32 slot, pcm, len, hash;
+    u32 n;
+    u32 pts[MAXSL];
+    s32 sel;                       /* the selected slice */
+    u32 v0, v1;                    /* the view, in samples */
+    s32 changed;                   /* differs from what was opened */
+    s32 custom;                    /* the table came from (or goes to) the store */
+    s32 cleared;                   /* DELETE ALL: the sample goes back to its grid */
+    s8 lo[WCOLS], hi[WCOLS];       /* peaks per column, -31..31 */
+    s32 peaks_ok;
+};
+struct slc_ed slc_ed;
+static struct an ed_an;            /* the editor's (synchronous) analysis */
+
+static s32 ed_is_open(void)
+{
+    return slc_ed.open;
+}
+
+static void ed_auto_table(void)
+{
+    an_start(&ed_an, slc_ed.slot, slc_ed.pcm, slc_ed.len, slc_ed.hash);
+    while (!an_step(&ed_an, 1u << 20))
+        ;
+    ed_an.active = 0;
+    slc_ed.n = an_table(&ed_an, slc_ed.pts);
+}
+
+static void ed_peaks(void)
+{
+    const s16 *x = (const s16 *)slc_ed.pcm;
+    u32 span = slc_ed.v1 - slc_ed.v0, c;
+    u32 q = span / WCOLS, r = span % WCOLS;     /* column c: v0 + c q + c r / WCOLS */
+    for (c = 0; c < WCOLS; c++) {
+        u32 a = slc_ed.v0 + c * q + (c * r) / WCOLS;
+        u32 b = slc_ed.v0 + (c + 1) * q + ((c + 1) * r) / WCOLS, i, step;
+        s32 lo = 0, hi = 0;
+        if (b <= a)
+            b = a + 1;
+        step = (b - a) / 64 + 1;           /* at most ~64 reads a column */
+        for (i = a; i < b && i < slc_ed.len; i += step) {
+            s32 v = x[i];
+            if (v < lo)
+                lo = v;
+            if (v > hi)
+                hi = v;
+        }
+        slc_ed.lo[c] = (s8)(lo >> 10);
+        slc_ed.hi[c] = (s8)(hi >> 10);
+    }
+    slc_ed.peaks_ok = 1;
+}
+
+/* Keep the selected slice's start in view. */
+static void ed_follow(void)
+{
+    u32 span = slc_ed.v1 - slc_ed.v0, p = slc_ed.pts[slc_ed.sel];
+    if (p >= slc_ed.v0 && p < slc_ed.v1)
+        return;
+    slc_ed.v0 = p > span / 4 ? p - span / 4 : 0;
+    if (slc_ed.v0 + span > slc_ed.len)
+        slc_ed.v0 = slc_ed.len > span ? slc_ed.len - span : 0;
+    slc_ed.v1 = slc_ed.v0 + span;
+    slc_ed.peaks_ok = 0;
+}
+
+/* Open the editor on a slot: its custom points, else its table (AUTO's
+ * analysis or the stored points it plays), else a fresh analysis.
+ * Returns 0 if the slot holds no sample. */
+s32 slc_ed_open(u32 slot)
+{
+    u32 pcm, len, hash, i;
+    struct slc_rec *r;
+    if (slot >= SLOTS)
+        return 0;
+    slot_info(slot, &pcm, &len, &hash);
+    if (!slot_ok(pcm, len))
+        return 0;
+    slc_ed.slot = slot;
+    slc_ed.pcm = pcm;
+    slc_ed.len = len;
+    slc_ed.hash = hash;
+    r = store_find(hash, len);
+    if (r) {
+        slc_ed.n = r->n;
+        for (i = 0; i < r->n; i++)
+            slc_ed.pts[i] = r->pts[i];
+        slc_ed.custom = 1;
+    } else if (slc_n[slot] && slc_key[slot][0] == pcm && slc_key[slot][1] == len
+               && slc_key[slot][2] == hash) {
+        slc_ed.n = slc_n[slot];
+        for (i = 0; i < slc_ed.n; i++)
+            slc_ed.pts[i] = slc_pts[slot][i];
+        slc_ed.custom = 0;
+    } else {
+        ed_auto_table();
+        slc_ed.custom = 0;
+    }
+    slc_ed.sel = 0;
+    slc_ed.v0 = 0;
+    slc_ed.v1 = len;
+    slc_ed.changed = 0;
+    slc_ed.cleared = 0;
+    slc_ed.peaks_ok = 0;
+    slc_ed.open = 1;
+    return 1;
+}
+
+/* Every slot holding the edited sample: apply f. */
+static void ed_each_slot(void (*f)(u32 slot, const u32 *key))
+{
+    u32 s, pcm, len, hash, key[3];
+    for (s = 0; s < SLOTS; s++) {
+        slot_info(s, &pcm, &len, &hash);
+        if (hash != slc_ed.hash || len != slc_ed.len || !slot_ok(pcm, len))
+            continue;
+        key[0] = pcm;
+        key[1] = len;
+        key[2] = hash;
+        f(s, key);
+    }
+}
+
+static void slot_own(u32 s, const u32 *key)      /* the edited list, as its own */
+{
+    slc_key[s][0] = key[0];
+    slc_key[s][1] = key[1];
+    slc_key[s][2] = key[2];
+    slc_stale[s] = 0;
+    publish(s, key, slc_ed.n, slc_ed.pts);
+    slc_cust[s] = 1;
+}
+
+static void slot_back(u32 s, const u32 *key)     /* back to the grid (or AUTO) */
+{
+    (void)key;
+    slc_cust[s] = 0;
+    slc_n[s] = 0;
+    slc_stale[s] = 1;
+}
+
+/* Close: keep the edits (store them for this sample, and play them now in
+ * every slot holding it) or drop them. */
+void slc_ed_close(s32 keep)
+{
+    if (!slc_ed.open)
+        return;
+    if (keep && slc_ed.cleared) {
+        store_drop(slc_ed.hash, slc_ed.len);
+        ed_each_slot(slot_back);
+    } else if (keep && slc_ed.changed) {
+        store_put(slc_ed.hash, slc_ed.len, slc_ed.n, slc_ed.pts);
+        ed_each_slot(slot_own);
+    }
+    slc_ed.open = 0;
+}
+
+/* The edits so far, played at once: a changed list is the sample's own. */
+static void ed_live(void)
+{
+    if (slc_ed.cleared) {
+        ed_each_slot(slot_back);
+        return;
+    }
+    if (slc_ed.changed)
+        ed_each_slot(slot_own);
+    else {
+        u32 key[3];
+        key[0] = slc_ed.pcm;
+        key[1] = slc_ed.len;
+        key[2] = slc_ed.hash;
+        publish(slc_ed.slot, key, slc_ed.n, slc_ed.pts);
+    }
+}
+
+/* CREATE GRID: an equal grid of g slices, each start moved back to the
+ * zero crossing before it (within 128 samples), as the stock grid snaps. */
+void slc_ed_grid(s32 g)
+{
+    const s16 *x = (const s16 *)slc_ed.pcm;
+    u32 q, r, k;
+    if (g < 1 || g > MAXSL)
+        return;
+    q = slc_ed.len / g;
+    r = slc_ed.len % g;
+    for (k = 0; k < (u32)g; k++) {
+        u32 p = k * q + (k * r) / g, j;
+        for (j = p; j > 0 && p - j < 128; j--)
+            if ((x[j - 1] <= 0 && x[j] > 0) || (x[j - 1] >= 0 && x[j] < 0) || x[j] == 0)
+                break;
+        slc_ed.pts[k] = k ? j : 0;
+    }
+    slc_ed.n = g;
+    slc_ed.sel = 0;
+    slc_ed.changed = 1;
+    slc_ed.cleared = 0;
+    ed_follow();
+}
+
+/* DELETE ALL: one slice, the whole sample, and back to its grid on close. */
+void slc_ed_clear(void)
+{
+    slc_ed.n = 1;
+    slc_ed.pts[0] = 0;
+    slc_ed.sel = 0;
+    slc_ed.changed = 1;
+    slc_ed.cleared = 1;
+    ed_follow();
+}
+
+void slc_ed_select(s32 d)
+{
+    s32 s = slc_ed.sel + d;
+    if (s < 0)
+        s = 0;
+    if (s >= (s32)slc_ed.n)
+        s = slc_ed.n - 1;
+    slc_ed.sel = s;
+    ed_follow();
+}
+
+/* Move the selected slice's start by d steps: a column of the view
+ * (coarse) or a sample (fine), kept between its neighbours. */
+void slc_ed_move(s32 d, s32 fine)
+{
+    s32 k = slc_ed.sel;
+    s32 step = fine ? 1 : (s32)((slc_ed.v1 - slc_ed.v0) / WCOLS);
+    s32 p = (s32)slc_ed.pts[k] + d * (step ? step : 1);
+    s32 lo = k > 0 ? (s32)slc_ed.pts[k - 1] + MINSL : 0;
+    s32 hi = k + 1 < (s32)slc_ed.n ? (s32)slc_ed.pts[k + 1] - MINSL : (s32)slc_ed.len - MINSL;
+    if (p < lo)
+        p = lo;
+    if (p > hi)
+        p = hi;
+    if ((u32)p != slc_ed.pts[k]) {
+        slc_ed.pts[k] = p;
+        slc_ed.cleared = 0;
+        slc_ed.changed = 1;
+    }
+    ed_follow();
+}
+
+/* Zoom around the selected slice's start: d > 0 in (halving the span). */
+void slc_ed_zoom(s32 d)
+{
+    u32 span = slc_ed.v1 - slc_ed.v0, c = slc_ed.pts[slc_ed.sel];
+    while (d > 0 && span > WCOLS * 2) {
+        span /= 2;
+        d--;
+    }
+    while (d < 0 && span < slc_ed.len) {
+        span *= 2;
+        d++;
+    }
+    if (span > slc_ed.len)
+        span = slc_ed.len;
+    slc_ed.v0 = c > span / 2 ? c - span / 2 : 0;
+    if (slc_ed.v0 + span > slc_ed.len)
+        slc_ed.v0 = slc_ed.len - span;
+    slc_ed.v1 = slc_ed.v0 + span;
+    slc_ed.peaks_ok = 0;
+}
+
+/* Pan the view by half its width (d < 0 left). */
+void slc_ed_pan(s32 d)
+{
+    u32 span = slc_ed.v1 - slc_ed.v0, half = span / 2;
+    if (d < 0)
+        slc_ed.v0 = slc_ed.v0 > half ? slc_ed.v0 - half : 0;
+    else if (d > 0)
+        slc_ed.v0 = slc_ed.v0 + half + span <= slc_ed.len ? slc_ed.v0 + half : slc_ed.len - span;
+    slc_ed.v1 = slc_ed.v0 + span;
+    slc_ed.peaks_ok = 0;
+}
+
+/* Split the selected slice at its middle. */
+void slc_ed_add(void)
+{
+    s32 k = slc_ed.sel, i;
+    u32 a = slc_ed.pts[k];
+    u32 b = k + 1 < (s32)slc_ed.n ? slc_ed.pts[k + 1] : slc_ed.len;
+    if (slc_ed.n >= MAXSL || b - a < 2 * MINSL)
+        return;
+    for (i = slc_ed.n; i > k + 1; i--)
+        slc_ed.pts[i] = slc_ed.pts[i - 1];
+    slc_ed.pts[k + 1] = a + (b - a) / 2;
+    slc_ed.n++;
+    slc_ed.sel = k + 1;
+    slc_ed.cleared = 0;
+    slc_ed.changed = 1;
+    ed_follow();
+}
+
+/* Remove the selected slice: it merges into the one before (for the first
+ * slice, what lay before the next one is no longer played). */
+void slc_ed_delete(void)
+{
+    s32 k = slc_ed.sel, i;
+    if (slc_ed.n <= 1)
+        return;
+    for (i = k; i + 1 < (s32)slc_ed.n; i++)
+        slc_ed.pts[i] = slc_ed.pts[i + 1];
+    slc_ed.n--;
+    if (slc_ed.sel >= (s32)slc_ed.n)
+        slc_ed.sel = slc_ed.n - 1;
+    slc_ed.cleared = 0;
+    slc_ed.changed = 1;
+    ed_follow();
+}
+
+/* Back to the analysis (and forget this sample's custom points on keep). */
+/* AUTO SLICE: the list becomes the analysis's (kept as the sample's own). */
+void slc_ed_auto(void)
+{
+    ed_auto_table();
+    slc_ed.sel = 0;
+    slc_ed.changed = 1;
+    slc_ed.cleared = 0;
+    ed_follow();
+}
+
+/* The peaks for the current view (recomputed after a view change). */
+const s8 *slc_ed_peaks(s32 which)
+{
+    if (!slc_ed.peaks_ok)
+        ed_peaks();
+    return which ? slc_ed.hi : slc_ed.lo;
+}
+
+/* Column (0..WCOLS-1) of a sample position in the view, or -1 outside it. */
+s32 slc_ed_col(u32 pos)
+{
+    u32 q = (slc_ed.v1 - slc_ed.v0) / WCOLS, c;
+    if (pos < slc_ed.v0 || pos >= slc_ed.v1)
+        return -1;
+    c = (pos - slc_ed.v0) / (q ? q : 1);
+    return c < WCOLS ? (s32)c : WCOLS - 1;
+}
+
+/* ---- the slice editor's screen and controls ------------------------------------ */
+/* Opened by holding YES on the SRC page of a SLICE track (slc_ui_srckey,
+ * from our wrapper of the SRC page's key handler). While it is open the
+ * main loop's key and encoder events come here first and go no further
+ * (sysinfo.s ed_key / ed_enc), and hook_draw draws it over the whole
+ * screen after the views have drawn.
+ *
+ *   encoder A  select a slice        YES      the menu: SPLIT SLICE, DELETE
+ *   encoder B  move its start                 SLICE, AUTO SLICE, CREATE GRID
+ *   encoder C  ... by single samples          (LEFT/RIGHT: 4..64), DELETE ALL
+ *   encoder D  zoom                  FUNC+NO  delete the slice
+ *   trig keys  select and audition   NO       done (kept for this sample)
+ *              slice 1-16 (UP/DOWN: 17-32, ...)
+ *   LEFT/RIGHT the previous/next slice, played while held
+ *   FUNC+LEFT/RIGHT the previous/next sample (the track's SAMP)
+ *                                    PLAY, STOP  work as ever
+ *
+ * Edits are played at once (the slot's table is republished), and on NO
+ * they are kept per sample in the store (slc_store) for every project. */
+typedef void (*fillrect_t)(void *bmp, s32 x0, s32 y0, s32 x1, s32 y1, s32 c);
+typedef void (*framerect_t)(void *bmp, s32 x0, s32 y0, s32 x1, s32 y1, s32 c);
+typedef void (*vline_t)(void *bmp, s32 x, s32 y0, s32 y1, s32 c);
+typedef void (*pixel_t)(void *bmp, s32 x, s32 y, s32 c);
+typedef void (*textf_t)(void *bmp, const void *font, s32 x, s32 y, s32 maxlen, const char *fmt, ...);
+typedef void (*noteon_t)(s32 track, s32 note, s32 vel, s32 src, s32 a, s32 b, s32 c);
+typedef void (*noteoff_t)(s32 track, s32 note, s32 src);
+typedef s32 (*machine_t)(void *view);
+#define FILLRECT ((fillrect_t)0x400c19a6)   /* colour 0 clear, 1 set, < 0 invert */
+#define FRAMERECT ((framerect_t)0x400c178a)
+#define VLINE    ((vline_t)0x400c1040)
+#define PIXEL    ((pixel_t)0x400c0cf4)
+#define TEXTF    ((textf_t)0x400c257c)
+#define FONT5    ((const void *)0x40200b0c)
+#define NOTEON   ((noteon_t)0x400d53dc)
+#define NOTEOFF  ((noteoff_t)0x400d575e)
+#define MACHINE  ((machine_t)0x4002b5d4)    /* the SRC page's machine: 3 = SLICE */
+
+#define K_YES   12
+#define K_NO    13
+#define K_UP    14
+#define K_DOWN  15
+#define K_LEFT  16
+#define K_RIGHT 17
+#define K_TRIG1 24
+
+volatile s32 slc_aud_voice = -1;   /* while set, every start of this voice plays ... */
+volatile s32 slc_aud_slice;        /* ... this slice (slice_auto_window) */
+
+/* ---- diagnostics, read over USB (PEEK): the last 32 of each ------------------- */
+struct slc_dbg {
+    u32 enc_i, enc[32];            /* encoder << 24 | delta & 0xffffff */
+    u32 key_i, key[32];            /* key << 16 | flags */
+    u32 win_i, win[32];            /* audition << 31 | v << 24 | sel << 16 | slot */
+    u32 noteons;
+};
+struct slc_dbg slc_dbg;
+
+/* Called for every block a SLICE voice renders, not only at its start: an
+ * entry the same as the last one is not logged again. */
+void slc_dbg_win(s32 v, s32 sel, s32 aud)
+{
+    u32 slot = *(const volatile u8 *)(VOICE_SLOT + 94 * v);
+    u32 x = (aud ? 0x80000000u : 0) | ((u32)v << 24) | ((u32)(sel & 0xff) << 16) | slot;
+    if (slc_dbg.win_i && slc_dbg.win[(slc_dbg.win_i - 1) & 31] == x)
+        return;
+    slc_dbg.win[slc_dbg.win_i++ & 31] = x;
+}
+static s32 ui_page;                /* trig keys play slices 16 page + 1.. */
+static s32 aud_track = -1, aud_note;
+
+/* The SRC page the editor was opened from, and its track. */
+typedef s32 (*trackof_t)(void *obj);
+typedef void (*pageset_t)(void *view, s32 param, s32 delta, s32 flag, u8 *changed);
+#define TRACK_OF ((trackof_t)0x4001d24e)   /* (view + 116) -> the page's track */
+#define P_SAMP   0x6f                      /* SAMP, as the page's setter knows it */
+static void *ed_view;
+static s32 ed_vtrack = -1;
+
+/* The audio track playing the edited sample: the SRC page's track, else
+ * the voice (one per track) that last started on its slot, else 0. */
+static s32 ed_track(void)
+{
+    s32 t;
+    if (ed_vtrack >= 0 && ed_vtrack < 8)
+        return ed_vtrack;
+    for (t = 0; t < 8; t++)
+        if (*(const volatile u8 *)(VOICE_SLOT + 94 * t) == slc_ed.slot)
+            return t;
+    return 0;
+}
+
+static void aud_stop(void)
+{
+    slc_aud_voice = -1;
+    if (aud_track >= 0)
+        NOTEOFF(aud_track, aud_note, 0x40);
+    aud_track = -1;
+}
+
+/* Play slice k on the edited sample's track. A note-off first makes the
+ * note-on start the voice again even if something else just started it
+ * (on the unit, a trig key can reach the track by another path too). */
+static void aud_start(s32 k)
+{
+    aud_stop();
+    aud_track = ed_track();
+    aud_note = 60;
+    slc_aud_slice = k;
+    slc_aud_voice = aud_track;
+    NOTEOFF(aud_track, aud_note, 0x40);
+    NOTEON(aud_track, aud_note, 100, 0x40, 0, -1, -1);
+    slc_dbg.noteons++;
+}
+
+static void knob_reset(void);
+static void menu_reset(void);
+
+/* The SRC page's key handler, first: hold YES (its first repeat) on a
+ * SLICE track opens the editor on the page's sample slot. Returns 1 if
+ * the event was taken. */
+s32 slc_ui_srckey(void *view, const u8 *ev)
+{
+    s32 key = *(const s32 *)(ev + 12), fl = *(const s32 *)(ev + 16), slot;
+    if (key != K_YES || (fl & 9) != 9 || slc_ed.open)
+        return 0;
+    if (MACHINE(view) != 3)
+        return 0;
+    if (!slc_loaded && !store_load())
+        return 0;                            /* the drive is busy: not now */
+    slot = *(const s32 *)((const u8 *)view + 524);  /* the SLICE waveform's slot */
+    if (slot < 0 || slot >= SLOTS || !slc_ed_open(slot))
+        return 0;
+    slc_any = 1;
+    slc_want[slot] = 1;
+    ed_live();
+    ui_page = 0;
+    knob_reset();
+    menu_reset();
+    ed_view = view;
+    ed_vtrack = TRACK_OF(*(void **)((u8 *)view + 116));
+    return 1;
+}
+
+/* FUNC+LEFT/RIGHT: the previous or next sample slot that holds a sample. The
+ * track's SAMP is moved there through the SRC page's own setter (its
+ * vtable slot 22, 0x400309b0: what knob D calls, with a delta), the edits
+ * so far are kept as NO keeps them, and the editor opens on the new
+ * sample. */
+static void ed_sample(s32 dir)
+{
+    s32 s = slc_ed.slot, from = s;
+    u32 pcm, len, hash;
+    u8 changed = 0;
+    pageset_t set;
+    if (!ed_view)
+        return;
+    for (;;) {
+        s += dir;
+        if (s < 1 || s >= SLOTS)
+            return;                          /* none that way: stay */
+        slot_info(s, &pcm, &len, &hash);
+        if (slot_ok(pcm, len))
+            break;
+    }
+    aud_stop();
+    set = *(pageset_t *)(*(u8 **)ed_view + 88);
+    set(ed_view, P_SAMP, (s - from) << 8, 0, &changed);
+    slc_ed_close(1);
+    if (!slc_ed_open(s))
+        return;                              /* the editor stays shut */
+    slc_want[s] = 1;
+    ed_live();
+    ui_page = 0;
+    knob_reset();
+    menu_reset();
+}
+
+/* The YES menu (as the Octatrack's slice menu). */
+#define MENU_N 5
+static const char *const menu_txt[MENU_N] = {
+    "SPLIT SLICE", "DELETE SLICE", "AUTO SLICE", "CREATE GRID", "DELETE ALL"
+};
+static const u8 menu_grid[5] = { 4, 8, 16, 32, 64 };
+static s32 menu_open, menu_sel, menu_g = 2;
+
+static void menu_reset(void)
+{
+    menu_open = 0;
+    menu_sel = 0;
+}
+
+static void menu_do(void)
+{
+    switch (menu_sel) {
+    case 0: slc_ed_add(); break;
+    case 1: slc_ed_delete(); break;
+    case 2: slc_ed_auto(); break;
+    case 3: slc_ed_grid(menu_grid[menu_g]); break;
+    case 4: slc_ed_clear(); break;
+    }
+    ed_live();
+    menu_open = 0;
+}
+
+static void menu_key(s32 key)
+{
+    switch (key) {
+    case K_UP:
+        if (menu_sel > 0)
+            menu_sel--;
+        break;
+    case K_DOWN:
+        if (menu_sel < MENU_N - 1)
+            menu_sel++;
+        break;
+    case K_LEFT:
+        if (menu_sel == 3 && menu_g > 0)
+            menu_g--;
+        break;
+    case K_RIGHT:
+        if (menu_sel == 3 && menu_g < 4)
+            menu_g++;
+        break;
+    case K_YES:
+        menu_do();
+        break;
+    case K_NO:
+        menu_open = 0;
+        break;
+    }
+}
+
+void slc_ui_key(const u8 *ev)
+{
+    s32 key = *(const s32 *)(ev + 12), fl = *(const s32 *)(ev + 16);
+    s32 press = (fl & 1) && !(fl & 8), func = fl & 2;
+    slc_dbg.key[slc_dbg.key_i++ & 31] = ((u32)key << 16) | (fl & 0xffff);
+    if (menu_open) {
+        if (press)
+            menu_key(key);
+        return;
+    }
+    if (key >= K_TRIG1 && key < K_TRIG1 + 16) {
+        s32 k = ui_page * 16 + key - K_TRIG1;
+        if (press && k < (s32)slc_ed.n) {
+            slc_ed.sel = k;
+            ed_follow();
+            aud_start(k);
+        } else if (!(fl & 1))
+            aud_stop();
+        return;
+    }
+    /* LEFT/RIGHT: the previous/next slice, played while held (as a trig
+     * key; held, they repeat). FUNC+LEFT/RIGHT: the previous/next sample. */
+    if (key == K_LEFT || key == K_RIGHT) {
+        s32 d = key == K_LEFT ? -1 : 1;
+        if (press && func)
+            ed_sample(d);
+        else if ((fl & 1) && !func) {
+            slc_ed_select(d);
+            aud_start(slc_ed.sel);
+        } else if (!(fl & 1))
+            aud_stop();
+        return;
+    }
+    if (!press)
+        return;
+    switch (key) {
+    case K_YES:
+        if (func) {
+            slc_ed_auto();
+            ed_live();
+        } else {
+            menu_open = 1;
+            menu_sel = 0;
+        }
+        break;
+    case K_NO:
+        if (func) {
+            slc_ed_delete();
+            ed_live();
+        } else {
+            aud_stop();
+            slc_ed_close(1);
+        }
+        break;
+    case K_UP:
+        if (ui_page < 3)
+            ui_page++;
+        break;
+    case K_DOWN:
+        if (ui_page > 0)
+            ui_page--;
+        break;
+    }
+}
+
+/* Select (A, and the menu) and zoom (D) step as the stock list parameters
+ * do (SAMP, PLAY MODE): through the firmware's own knob filter 0x400c05ee
+ * (state, event, config) with its default config 0x4208cb64. That config
+ * notches: a knob's level rests at 48, a count takes 3 off it, nothing
+ * steps above 24, then a step every 6 counts, and each step puts 48 back.
+ * The state is ours: 20 bytes a knob from +32, level at +16 (knob 10 and
+ * up, and PAGE, share +232). Stock builds it with 0x400c02e4 (levels 48)
+ * and runs its tick 0x400c03cc on a period-10 timer, which counts a level
+ * below 48 back up (the dead zone returns after a pause); slc_ui_tick runs
+ * that tick 3 times a 30 Hz UI tick. The moves (B) sum counts, a step
+ * every 4, keeping the acceleration; the fine move (C) is a sample a
+ * count. */
+typedef s32 (*knobf_t)(void *st, const u8 *ev, const void *cfg);
+typedef void (*knobt_t)(void *st, void *timeout);
+#define KNOB_FILTER ((knobf_t)0x400c05ee)
+#define KNOB_TICK   ((knobt_t)0x400c03cc)
+#define KNOB_NOTCH  ((const void *)0x4208cb64)
+static s32 knob_st[64];
+
+static void knob_reset(void)
+{
+    s32 i;
+    for (i = 0; i < 64; i++)
+        knob_st[i] = 0;
+    for (i = 0; i < 11; i++)
+        knob_st[(32 + 20 * i + 16) / 4] = 48;
+}
+
+void slc_ui_tick(void)
+{
+    KNOB_TICK(knob_st, 0);
+    KNOB_TICK(knob_st, 0);
+    KNOB_TICK(knob_st, 0);
+}
+
+static s32 enc_acc[10];
+
+static s32 enc_counts(s32 enc, s32 d, s32 cap)
+{
+    s32 st;
+    if (enc < 0 || enc > 9)
+        return 0;
+    if ((d > 0 && enc_acc[enc] < 0) || (d < 0 && enc_acc[enc] > 0))
+        enc_acc[enc] = 0;                  /* a change of direction starts afresh */
+    enc_acc[enc] += d;
+    st = enc_acc[enc] / 4;
+    enc_acc[enc] -= st * 4;
+    if (cap && st > cap)
+        st = cap;
+    if (cap && st < -cap)
+        st = -cap;
+    return st;
+}
+
+void slc_ui_enc(const u8 *ev)
+{
+    s32 enc = *(const s32 *)(ev + 12), d = *(const s32 *)(ev + 16);
+    s32 steps;
+    slc_dbg.enc[slc_dbg.enc_i++ & 31] = ((u32)enc << 24) | ((u32)d & 0xffffff);
+    if (enc == 1 || enc == 4)
+        steps = KNOB_FILTER(knob_st, ev, KNOB_NOTCH);
+    else
+        steps = enc == 3 ? d : enc_counts(enc, d, 0);
+    if (steps && menu_open) {
+        if (enc == 1) {
+            menu_sel += steps;
+            if (menu_sel < 0)
+                menu_sel = 0;
+            if (menu_sel > MENU_N - 1)
+                menu_sel = MENU_N - 1;
+        }
+        return;
+    }
+    if (!steps)
+        return;
+    switch (enc) {
+    case 1:
+        slc_ed_select(steps);
+        break;
+    case 2:
+        slc_ed_move(steps, 0);
+        ed_live();
+        break;
+    case 3:
+        slc_ed_move(steps, 1);
+        ed_live();
+        break;
+    case 4:
+        slc_ed_zoom(steps);
+        break;
+    }
+}
+
+/* y = 0 is the bottom row. Top band 55..63: slice and position; waveform
+ * 10..52 around 31; bottom band 0..8: hints. */
+void slc_ui_draw(void *bmp)
+{
+    const s8 *lo = slc_ed_peaks(0), *hi = slc_ed_peaks(1);
+    s32 c, i, a, b;
+    u32 p = slc_ed.pts[slc_ed.sel];
+    u32 end = slc_ed.sel + 1 < (s32)slc_ed.n ? slc_ed.pts[slc_ed.sel + 1] : slc_ed.len;
+    FILLRECT(bmp, 0, 0, 127, 63, 0);
+    TEXTF(bmp, FONT5, 1, 57, -1, "SL %d/%d %s", slc_ed.sel + 1, slc_ed.n,
+          slc_ed.cleared ? "GRID" : slc_ed.changed ? "EDIT" : (slc_ed.custom ? "USER" : "AUTO"));
+    TEXTF(bmp, FONT5, 72, 57, -1, "%d.%03ds", p / 48000, (p % 48000) / 48);
+    for (c = 0; c < WCOLS; c++) {
+        s32 y0 = 31 + (lo[c] * 18) / 32, y1 = 31 + (hi[c] * 18) / 32;
+        if (y1 < y0)
+            y1 = y0;
+        VLINE(bmp, c, y0, y1, 1);
+    }
+    for (i = 0; i < (s32)slc_ed.n; i++) {  /* slice starts: dotted, cut out */
+        s32 x = slc_ed_col(slc_ed.pts[i]), y;
+        if (x < 0)
+            continue;
+        VLINE(bmp, x, 12, 50, 0);
+        for (y = 12; y <= 50; y += 2)
+            PIXEL(bmp, x, y, 1);
+    }
+    a = slc_ed_col(p);                     /* the selected slice: a solid start */
+    b = end >= slc_ed.v1 ? WCOLS - 1 : slc_ed_col(end);   /* and bars over it */
+    if (a >= 0)
+        VLINE(bmp, a, 10, 52, 1);
+    if (a < 0 && p < slc_ed.v0)
+        a = 0;
+    if (a >= 0 && b >= a) {
+        FILLRECT(bmp, a, 9, b, 10, 1);
+        FILLRECT(bmp, a, 52, b, 53, 1);
+    }
+    TEXTF(bmp, FONT5, 1, 1, -1, menu_open ? "UP/DN YES:DO NO:BACK" : "A:SEL B:MOVE YES:MENU");
+    if (!menu_open)
+        TEXTF(bmp, FONT5, 96, 1, -1, "SMP%d", slc_ed.slot);
+    if (ui_page)
+        TEXTF(bmp, FONT5, 110, 57, -1, "P%d", ui_page + 1);
+    if (menu_open) {
+        FILLRECT(bmp, 16, 8, 111, 54, 0);
+        FRAMERECT(bmp, 16, 8, 111, 54, 1);
+        for (i = 0; i < MENU_N; i++) {
+            s32 y = 45 - i * 8;
+            if (i == 3)
+                TEXTF(bmp, FONT5, 21, y, -1, "CREATE GRID <%d>", menu_grid[menu_g]);
+            else
+                TEXTF(bmp, FONT5, 21, y, -1, "%s", menu_txt[i]);
+            if (i == menu_sel)
+                FILLRECT(bmp, 18, y - 1, 109, y + 6, -1);
+        }
+    }
+}

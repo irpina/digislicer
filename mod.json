@@ -1,0 +1,22 @@
+{
+ "id": "digislicer", "version": "1.0",
+ "title": "digislicer", "category": "Sampling", "author": "irpina",
+ "description": "A slice editor for the SLICE machine: hold YES on a SLICE track's SRC page to edit a sample's slice points (split, delete, move, auto-slice on transients, equal grids) and play them from the trig keys. A sample's own slices play on every SLICE track, whatever GRID says, and are kept per sample on the +Drive (/cfw/slices.a, .b). GRID also gets AUTO: slices on the sample's transients.",
+ "device": "digitakt-mk1", "os": "1.53",
+ "sources": ["glue.s", "slice.c"],
+ "sites": [
+  {"addr": "0x40074df2", "stock": "4fefffe8725e", "op": "jmp", "target": "slice_win"},
+  {"addr": "0x4005fa2e", "stock": "202f000c222f0008", "op": "jmp", "target": "grid_fmt"},
+  {"addr": "0x401848dc", "stock": "4003b272", "op": "ptr", "target": "ed_srckey"},
+  {"addr": "0x401ab9b0", "stock": "00000400", "op": "bytes", "new": "00000500"}
+ ],
+ "subscribe": [
+  {"event": "ev_tick", "fn": "slice_tick", "order": 10},
+  {"event": "ev_draw", "fn": "slc_draw", "order": 90},
+  {"event": "ev_key", "fn": "slc_key", "order": 50},
+  {"event": "ev_enc", "fn": "slc_enc", "order": 50}
+ ],
+ "requires": ["core"],
+ "resources": {"names": ["param:SLICE GRID=5", "ui:SRC page:hold YES",
+                         "drive:/cfw/slices.a", "drive:/cfw/slices.b"]}
+}
