@@ -218,5 +218,14 @@ mods through the real bootloader.
 
 ## Licence
 
-GPL-2.0: see [LICENSE](LICENSE). Not affiliated with Elektron. Digitakt is
-a trademark of Elektron. Custom firmware is at your own risk.
+GPL-2.0-or-later. digislicer is free software: you can redistribute it
+and/or modify it under the terms of the GNU General Public License as
+published by the Free Software Foundation, either version 2 of the
+License, or (at your option) any later version. It is distributed in the
+hope that it will be useful, but WITHOUT ANY WARRANTY; without even the
+implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+See the GNU General Public License for more details: [LICENSE](LICENSE)
+holds version 2.
+
+Not affiliated with Elektron. Digitakt is a trademark of Elektron. Custom
+firmware is at your own risk.
