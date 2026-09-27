@@ -1,7 +1,7 @@
 {
- "id": "digislicer", "version": "1.1",
+ "id": "digislicer", "version": "1.2",
  "title": "digislicer", "category": "Sampling", "author": "irpina",
- "description": "A slice editor for the SLICE machine: hold YES on a SLICE track's SRC page to edit a sample's slice points (split, delete, move, auto-slice on transients, equal grids) and play them from the trig keys. A sample's own slices play on every SLICE track, whatever GRID says, and are kept per sample on the +Drive (/cfw/slices.a, .b). GRID also gets AUTO: slices on the sample's transients.",
+ "description": "A slice editor for the SLICE machine: hold YES on a SLICE track's SRC page to edit a sample's slice points (add at a cursor, split, delete, move, auto-slice on transients, equal grids) and play them from the trig keys. A sample's own slices play on every SLICE track, whatever GRID says, and are kept per sample on the +Drive (/cfw/slices.a, .b). GRID also gets AUTO: slices on the sample's transients.",
  "device": "digitakt-mk1", "os": "1.53",
  "sources": ["glue.s", "slice.c"],
  "sites": [

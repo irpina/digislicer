@@ -545,8 +545,9 @@ u64 slice_auto_window(const s8 *p, u32 note, u32 len, s32 v)
 /* ---- the slice editor's model ------------------------------------------------- */
 /* The editor works on a copy of one slot's table. Its view (drawn by the UI
  * side, sysinfo.s / the editor view) is a window [v0, v1) of the sample,
- * shown as WCOLS columns of min/max peaks. */
-#define WCOLS 128
+ * shown as WCOLS columns of min/max peaks. The screen's last 4 columns
+ * hold the vertical zoom's slider. */
+#define WCOLS 124
 struct slc_ed {
     s32 open;
     u32 slot, pcm, len, hash;
@@ -557,9 +558,12 @@ struct slc_ed {
     s32 changed;                   /* differs from what was opened */
     s32 custom;                    /* the table came from (or goes to) the store */
     s32 cleared;                   /* DELETE ALL: the sample goes back to its grid */
-    s8 lo[WCOLS], hi[WCOLS];       /* peaks per column, -31..31 */
+    s16 lo[WCOLS], hi[WCOLS];      /* peaks per column, as samples */
     s32 peaks_ok;
     s32 zoom;                      /* the view spans len / 2^(zoom / ZSTEPS) */
+    s32 vzoom;                     /* the waveform is drawn 2^(vzoom / ZSTEPS) high */
+    u32 cur;                       /* the cursor, in samples: the selected slice's
+                                      start, until LEVEL moves it */
 };
 struct slc_ed slc_ed;
 static struct an ed_an;            /* the editor's (synchronous) analysis */
@@ -597,23 +601,40 @@ static void ed_peaks(void)
             if (v > hi)
                 hi = v;
         }
-        slc_ed.lo[c] = (s8)(lo >> 10);
-        slc_ed.hi[c] = (s8)(hi >> 10);
+        slc_ed.lo[c] = (s16)lo;
+        slc_ed.hi[c] = (s16)hi;
     }
     slc_ed.peaks_ok = 1;
 }
 
-/* Keep the selected slice's start in view. */
+/* Keep sample p in view: for a new selection a jump (p a quarter in), for
+ * the cursor the least scroll that keeps it an eighth of the view from
+ * either edge, so what comes next shows (the sample's own ends aside).
+ * Scrolling right, p + m >= v1 >= span, so p + m + 1 - span does not
+ * wrap. */
+static void ed_show(u32 p, s32 jump)
+{
+    u32 span = slc_ed.v1 - slc_ed.v0, m = jump ? 0 : span / 8, v0;
+    if (p >= slc_ed.v0 + m && p + m < slc_ed.v1)
+        return;
+    if (jump)
+        v0 = p > span / 4 ? p - span / 4 : 0;
+    else if (p < slc_ed.v0 + m)
+        v0 = p > m ? p - m : 0;
+    else
+        v0 = p + m + 1 - span;
+    if (v0 + span > slc_ed.len)
+        v0 = slc_ed.len > span ? slc_ed.len - span : 0;
+    slc_ed.v0 = v0;
+    slc_ed.v1 = v0 + span;
+    slc_ed.peaks_ok = 0;
+}
+
+/* The cursor goes to the selected slice's start, and the view follows. */
 static void ed_follow(void)
 {
-    u32 span = slc_ed.v1 - slc_ed.v0, p = slc_ed.pts[slc_ed.sel];
-    if (p >= slc_ed.v0 && p < slc_ed.v1)
-        return;
-    slc_ed.v0 = p > span / 4 ? p - span / 4 : 0;
-    if (slc_ed.v0 + span > slc_ed.len)
-        slc_ed.v0 = slc_ed.len > span ? slc_ed.len - span : 0;
-    slc_ed.v1 = slc_ed.v0 + span;
-    slc_ed.peaks_ok = 0;
+    slc_ed.cur = slc_ed.pts[slc_ed.sel];
+    ed_show(slc_ed.cur, 1);
 }
 
 /* Open the editor on a slot: its custom points, else its table (AUTO's
@@ -652,6 +673,8 @@ s32 slc_ed_open(u32 slot)
     slc_ed.v0 = 0;
     slc_ed.v1 = len;
     slc_ed.zoom = 0;
+    slc_ed.vzoom = 0;
+    slc_ed.cur = slc_ed.pts[0];
     slc_ed.changed = 0;
     slc_ed.cleared = 0;
     slc_ed.peaks_ok = 0;
@@ -807,11 +830,11 @@ static u32 zoom_span(s32 z)
     return (s >> 8) * f + (((s & 255) * f) >> 8);
 }
 
-/* Zoom around the selected slice's start by d steps (d > 0 in). */
+/* Zoom around the cursor by d steps (d > 0 in). */
 void slc_ed_zoom(s32 d)
 {
     s32 z = slc_ed.zoom + d;
-    u32 span, c = slc_ed.pts[slc_ed.sel];
+    u32 span, c = slc_ed.cur;
     if (z < 0)
         z = 0;
     while (z > 0 && zoom_span(z) < WCOLS * 2)
@@ -825,6 +848,37 @@ void slc_ed_zoom(s32 d)
         slc_ed.v0 = slc_ed.len - span;
     slc_ed.v1 = slc_ed.v0 + span;
     slc_ed.peaks_ok = 0;
+}
+
+/* The vertical zoom, in the same steps (d > 0 taller): the waveform is
+ * drawn up to 2^(VZMAX / ZSTEPS) = 64 times taller, and clipped. */
+#define VZMAX (6 * ZSTEPS)
+void slc_ed_vzoom(s32 d)
+{
+    s32 z = slc_ed.vzoom + d;
+    slc_ed.vzoom = z < 0 ? 0 : z > VZMAX ? VZMAX : z;
+}
+
+/* Its gain x 256, 256 x 2^(vzoom / ZSTEPS): 2^(f / ZSTEPS) is
+ * 2 zoom_frac[ZSTEPS - f] / 256. */
+static s32 vzoom_gain(void)
+{
+    s32 k = slc_ed.vzoom / ZSTEPS, f = slc_ed.vzoom % ZSTEPS;
+    return f ? zoom_frac[ZSTEPS - f] << (k + 1) : 256 << k;
+}
+
+/* The waveform's rows on the screen (slc_ui_draw): the peaks and slice
+ * starts from WY0 to WY1, around WMID. */
+#define WY0  18
+#define WY1  50
+#define WMID 34
+
+/* A peak's height in pixels at gain g: full scale is WMID - WY0 = 16 at
+ * gain 256. v g is at most 2^15 2^14, so it fits. */
+static s32 peak_px(s32 v, s32 g)
+{
+    s32 y = (v * g) >> 19;
+    return y > WMID - WY0 ? WMID - WY0 : y < WY0 - WMID ? WY0 - WMID : y;
 }
 
 /* Pan the view by half its width (d < 0 left). */
@@ -852,6 +906,52 @@ void slc_ed_add(void)
     slc_ed.pts[k + 1] = a + (b - a) / 2;
     slc_ed.n++;
     slc_ed.sel = k + 1;
+    slc_ed.cleared = 0;
+    slc_ed.changed = 1;
+    ed_follow();
+}
+
+/* Move the cursor by d columns of the view (LEVEL); the view scrolls to
+ * keep it. d is at most a few thousand and a column 2^25 / WCOLS
+ * samples, so d step fits. */
+void slc_ed_cursor(s32 d)
+{
+    s32 step = (s32)((slc_ed.v1 - slc_ed.v0) / WCOLS);
+    s32 c = (s32)slc_ed.cur + d * step;
+    if (c < 0)
+        c = 0;
+    if (c > (s32)slc_ed.len - 1)
+        c = slc_ed.len - 1;
+    slc_ed.cur = c;
+    ed_show(c, 0);
+}
+
+/* Where ADD SLICE HERE would put the new slice in the list: after the
+ * starts at or before the cursor. -1 if a slice can't start there: at
+ * MAXSL, or within MINSL of a start or of the end. */
+static s32 ed_here(void)
+{
+    u32 c = slc_ed.cur, b;
+    s32 k = 0;
+    while (k < (s32)slc_ed.n && slc_ed.pts[k] <= c)
+        k++;
+    b = k < (s32)slc_ed.n ? slc_ed.pts[k] : slc_ed.len;
+    if (slc_ed.n >= MAXSL || (k > 0 && c < slc_ed.pts[k - 1] + MINSL) || c + MINSL > b)
+        return -1;
+    return k;
+}
+
+/* ADD SLICE HERE: a slice starts at the cursor, and is selected. */
+void slc_ed_add_here(void)
+{
+    s32 k = ed_here(), i;
+    if (k < 0)
+        return;
+    for (i = slc_ed.n; i > k; i--)
+        slc_ed.pts[i] = slc_ed.pts[i - 1];
+    slc_ed.pts[k] = slc_ed.cur;
+    slc_ed.n++;
+    slc_ed.sel = k;
     slc_ed.cleared = 0;
     slc_ed.changed = 1;
     ed_follow();
@@ -886,7 +986,7 @@ void slc_ed_auto(void)
 }
 
 /* The peaks for the current view (recomputed after a view change). */
-const s8 *slc_ed_peaks(s32 which)
+const s16 *slc_ed_peaks(s32 which)
 {
     if (!slc_ed.peaks_ok)
         ed_peaks();
@@ -913,10 +1013,12 @@ s32 slc_ed_col(u32 pos)
  * (sysinfo.s ed_key / ed_enc), and hook_draw draws it over the whole
  * screen after the views have drawn.
  *
- *   encoder A  select a slice        YES      the menu: SPLIT SLICE, DELETE
- *   encoder B  move its start                 SLICE, AUTO SLICE, CREATE GRID
- *   encoder C  ... by single samples          (LEFT/RIGHT: 4..64), DELETE ALL
- *   encoder D  zoom                  FUNC+NO  delete the slice
+ *   encoder A  select a slice        YES      the menu: ADD SLICE HERE (at
+ *   encoder B  move its start                 the cursor), SPLIT SLICE, DELETE
+ *   encoder C  ... by single samples          SLICE, AUTO SLICE, CREATE GRID
+ *   encoder D  zoom (at the cursor)           (LEFT/RIGHT: 4..64), DELETE ALL
+ *   encoder H  zoom vertically       FUNC+NO  delete the slice
+ *   LEVEL      move the cursor (the view scrolls with it)
  *   trig keys  select and audition   NO       done (kept for this sample)
  *              slice 1-16 (UP/DOWN: 17-32, ...)
  *   LEFT/RIGHT the previous/next slice, played while held
@@ -1083,13 +1185,16 @@ static void ed_sample(s32 dir)
     menu_reset();
 }
 
-/* The YES menu (as the Octatrack's slice menu). */
-#define MENU_N 5
-static const char *const menu_txt[MENU_N] = {
-    "SPLIT SLICE", "DELETE SLICE", "AUTO SLICE", "CREATE GRID", "DELETE ALL"
+/* The YES menu (as the Octatrack's slice menu). As there, ADD SLICE HERE
+ * is listed only while a slice can start at the cursor, so with the
+ * cursor on the selected slice's start the menu is SPLIT SLICE onwards. */
+enum { M_ADD, M_SPLIT, M_DELETE, M_AUTO, M_GRID, M_ALL, M_ITEMS };
+static const char *const menu_txt[M_ITEMS] = {
+    "ADD SLICE HERE", "SPLIT SLICE", "DELETE SLICE", "AUTO SLICE", "CREATE GRID", "DELETE ALL"
 };
 static const u8 menu_grid[5] = { 4, 8, 16, 32, 64 };
-static s32 menu_open, menu_sel, menu_g = 2;
+static u8 menu_item[M_ITEMS];      /* the items listed, from menu_build */
+static s32 menu_open, menu_sel, menu_n, menu_g = 2;
 
 static void menu_reset(void)
 {
@@ -1097,14 +1202,26 @@ static void menu_reset(void)
     menu_sel = 0;
 }
 
+static void menu_build(void)
+{
+    s32 i;
+    menu_n = 0;
+    for (i = 0; i < M_ITEMS; i++)
+        if (i != M_ADD || ed_here() >= 0)
+            menu_item[menu_n++] = (u8)i;
+    menu_sel = 0;
+    menu_open = 1;
+}
+
 static void menu_do(void)
 {
-    switch (menu_sel) {
-    case 0: slc_ed_add(); break;
-    case 1: slc_ed_delete(); break;
-    case 2: slc_ed_auto(); break;
-    case 3: slc_ed_grid(menu_grid[menu_g]); break;
-    case 4: slc_ed_clear(); break;
+    switch (menu_item[menu_sel]) {
+    case M_ADD: slc_ed_add_here(); break;
+    case M_SPLIT: slc_ed_add(); break;
+    case M_DELETE: slc_ed_delete(); break;
+    case M_AUTO: slc_ed_auto(); break;
+    case M_GRID: slc_ed_grid(menu_grid[menu_g]); break;
+    case M_ALL: slc_ed_clear(); break;
     }
     ed_live();
     menu_open = 0;
@@ -1118,15 +1235,15 @@ static void menu_key(s32 key)
             menu_sel--;
         break;
     case K_DOWN:
-        if (menu_sel < MENU_N - 1)
+        if (menu_sel < menu_n - 1)
             menu_sel++;
         break;
     case K_LEFT:
-        if (menu_sel == 3 && menu_g > 0)
+        if (menu_item[menu_sel] == M_GRID && menu_g > 0)
             menu_g--;
         break;
     case K_RIGHT:
-        if (menu_sel == 3 && menu_g < 4)
+        if (menu_item[menu_sel] == M_GRID && menu_g < 4)
             menu_g++;
         break;
     case K_YES:
@@ -1178,10 +1295,8 @@ void slc_ui_key(const u8 *ev)
         if (func) {
             slc_ed_auto();
             ed_live();
-        } else {
-            menu_open = 1;
-            menu_sel = 0;
-        }
+        } else
+            menu_build();
         break;
     case K_NO:
         if (func) {
@@ -1221,7 +1336,9 @@ void slc_ui_key(const u8 *ev)
  * the unit. It takes every count instead, as 1/16 of an octave, and a
  * faster turn (more counts an event: the unit sent 1 to 21) counts for
  * more: an event of d counts zooms d + d |d| / 8 steps. So 1 count is
- * 1 step (4%), 4 counts 6, 8 counts 16 (an octave), 21 counts 76. */
+ * 1 step (4%), 4 counts 6, 8 counts 16 (an octave), 21 counts 76. The
+ * vertical zoom (H, below D) takes the same steps, and so does the cursor
+ * (LEVEL, as the Octatrack's waveform marker), a step a view column. */
 static s32 zoom_steps(s32 d)
 {
     s32 a = d < 0 ? -d : d;
@@ -1276,7 +1393,7 @@ void slc_ui_enc(const u8 *ev)
     slc_dbg.enc[slc_dbg.enc_i++ & 31] = ((u32)enc << 24) | ((u32)d & 0xffffff);
     if (enc == 1)
         steps = KNOB_FILTER(knob_st, ev, KNOB_NOTCH);
-    else if (enc == 4)
+    else if (enc == 4 || enc == 8 || enc == 9)
         steps = zoom_steps(d);
     else
         steps = enc == 3 ? d : enc_counts(enc, d, 0);
@@ -1285,8 +1402,8 @@ void slc_ui_enc(const u8 *ev)
             menu_sel += steps;
             if (menu_sel < 0)
                 menu_sel = 0;
-            if (menu_sel > MENU_N - 1)
-                menu_sel = MENU_N - 1;
+            if (menu_sel > menu_n - 1)
+                menu_sel = menu_n - 1;
         }
         return;
     }
@@ -1307,69 +1424,103 @@ void slc_ui_enc(const u8 *ev)
     case 4:
         slc_ed_zoom(steps);
         break;
+    case 8:
+        slc_ed_vzoom(steps);
+        break;
+    case 9:
+        slc_ed_cursor(steps);
+        break;
     }
 }
 
-/* y = 0 is the bottom row. Top band 55..63: the slice, the sample slot,
- * the position and the trig keys' page; waveform 10..52 around 31; bottom
- * band 0..8: what knobs A-D do, in four columns as the stock pages lay
- * out their parameters (or the menu's keys while it is open). The font is
- * 4 pixels a character, so a row holds 32. */
-static const char *const knob_txt[4] = { "A:SEL", "B:MOVE", "C:FINE", "D:ZOOM" };
+/* The screen, y = 0 at the bottom. The font is 4 pixels a character, so a
+ * row holds 32.
+ *   57..61  the selected slice and how many, the sample slot, the trig
+ *           keys' page
+ *   55      the horizontal zoom: the part of the sample in view
+ *   15..53  the waveform, columns 0..WCOLS-1: peaks WY0..WY1 around WMID,
+ *           slice starts, the selected slice (its start WY0-2..WY1+2 and
+ *           bars), the cursor (an I-beam); the vertical zoom's slider right
+ *           of it, x 125..127
+ *   8..12   knobs A-D, in four columns as the stock pages lay out their
+ *   1..5    parameters, and under them LEVEL (the cursor, and where it is)
+ *           and H (under D); while the menu is open, the menu's keys */
+static const char *const knob_txt[4] = { "A:SEL", "B:MOVE", "C:FINE", "D:ZOOM X" };
 
 void slc_ui_draw(void *bmp)
 {
-    const s8 *lo = slc_ed_peaks(0), *hi = slc_ed_peaks(1);
-    s32 c, i, a, b;
+    const s16 *lo = slc_ed_peaks(0), *hi = slc_ed_peaks(1);
+    s32 c, i, a, b, g = vzoom_gain(), y, cx;
     u32 p = slc_ed.pts[slc_ed.sel];
     u32 end = slc_ed.sel + 1 < (s32)slc_ed.n ? slc_ed.pts[slc_ed.sel + 1] : slc_ed.len;
     FILLRECT(bmp, 0, 0, 127, 63, 0);
     TEXTF(bmp, FONT5, 1, 57, -1, "SL %d/%d %s", slc_ed.sel + 1, slc_ed.n,
           slc_ed.cleared ? "GRID" : slc_ed.changed ? "EDIT" : (slc_ed.custom ? "USER" : "AUTO"));
-    TEXTF(bmp, FONT5, 57, 57, -1, "SMP%d", slc_ed.slot);
-    TEXTF(bmp, FONT5, 85, 57, -1, "%d.%03ds", p / 48000, (p % 48000) / 48);
+    TEXTF(bmp, FONT5, 65, 57, -1, "SMP%d", slc_ed.slot);
+    if (ui_page)
+        TEXTF(bmp, FONT5, 117, 57, -1, "P%d", ui_page + 1);
+    /* The zooms, as the Octatrack shows them. Horizontal: the part of the
+     * sample in view, a bar on a dotted line for the whole sample (v0 WCOLS
+     * fits 32 bits as in slc_ed_col). Vertical: a slider right of the
+     * waveform, a box that fills from the bottom as the waveform grows. */
+    for (c = 0; c < WCOLS; c += 2)
+        PIXEL(bmp, c, 55, 1);
+    FILLRECT(bmp, slc_ed.v0 * WCOLS / slc_ed.len, 55, (slc_ed.v1 - 1) * WCOLS / slc_ed.len, 55, 1);
+    FRAMERECT(bmp, 125, WY0, 127, WY1, 1);
+    y = WY0 + (WY1 - WY0 - 1) * slc_ed.vzoom / VZMAX;
+    if (y > WY0)
+        VLINE(bmp, 126, WY0 + 1, y, 1);
     for (c = 0; c < WCOLS; c++) {
-        s32 y0 = 31 + (lo[c] * 18) / 32, y1 = 31 + (hi[c] * 18) / 32;
+        s32 y0 = WMID + peak_px(lo[c], g), y1 = WMID + peak_px(hi[c], g);
         if (y1 < y0)
             y1 = y0;
         VLINE(bmp, c, y0, y1, 1);
     }
+    cx = slc_ed_col(slc_ed.cur);           /* the cursor, off the start: the */
+    if (cx >= 0 && slc_ed.cur != p)        /* waveform inverted */
+        FILLRECT(bmp, cx, WY0, cx, WY1, -1);
     for (i = 0; i < (s32)slc_ed.n; i++) {  /* slice starts: dotted, cut out */
-        s32 x = slc_ed_col(slc_ed.pts[i]), y;
+        s32 x = slc_ed_col(slc_ed.pts[i]);
         if (x < 0)
             continue;
-        VLINE(bmp, x, 12, 50, 0);
-        for (y = 12; y <= 50; y += 2)
+        VLINE(bmp, x, WY0, WY1, 0);
+        for (y = WY0; y <= WY1; y += 2)
             PIXEL(bmp, x, y, 1);
     }
     a = slc_ed_col(p);                     /* the selected slice: a solid start */
     b = end >= slc_ed.v1 ? WCOLS - 1 : slc_ed_col(end);   /* and bars over it */
     if (a >= 0)
-        VLINE(bmp, a, 10, 52, 1);
+        VLINE(bmp, a, WY0 - 2, WY1 + 2, 1);
     if (a < 0 && p < slc_ed.v0)
         a = 0;
     if (a >= 0 && b >= a) {
-        FILLRECT(bmp, a, 9, b, 10, 1);
-        FILLRECT(bmp, a, 52, b, 53, 1);
+        FILLRECT(bmp, a, WY0 - 3, b, WY0 - 2, 1);
+        FILLRECT(bmp, a, WY1 + 2, b, WY1 + 3, 1);
+    }
+    if (cx >= 0) {                         /* the cursor's ends: an I-beam */
+        FILLRECT(bmp, cx > 0 ? cx - 1 : 0, WY0 - 1, cx + 1, WY0 - 1, 1);
+        FILLRECT(bmp, cx > 0 ? cx - 1 : 0, WY1 + 1, cx + 1, WY1 + 1, 1);
     }
     if (menu_open)
         TEXTF(bmp, FONT5, 1, 1, -1, "UP/DN YES:DO NO:BACK");
-    else
+    else {
         for (i = 0; i < 4; i++)
-            TEXTF(bmp, FONT5, 1 + 32 * i, 1, -1, "%s", knob_txt[i]);
-    if (ui_page)
-        TEXTF(bmp, FONT5, 117, 57, -1, "P%d", ui_page + 1);
-    if (menu_open) {
-        FILLRECT(bmp, 16, 8, 111, 54, 0);
-        FRAMERECT(bmp, 16, 8, 111, 54, 1);
-        for (i = 0; i < MENU_N; i++) {
-            s32 y = 45 - i * 8;
-            if (i == 3)
+            TEXTF(bmp, FONT5, 1 + 32 * i, 8, -1, "%s", knob_txt[i]);
+        TEXTF(bmp, FONT5, 1, 1, -1, "LVL:CURSOR %d.%03ds", slc_ed.cur / 48000, (slc_ed.cur % 48000) / 48);
+        TEXTF(bmp, FONT5, 97, 1, -1, "H:ZOOM Y");
+    }
+    if (menu_open) {                       /* a row every 7 pixels from 46 down, */
+        s32 bot = 46 - 7 * (menu_n - 1) - 3;   /* the box fitted to them */
+        FILLRECT(bmp, 16, bot, 111, 54, 0);
+        FRAMERECT(bmp, 16, bot, 111, 54, 1);
+        for (i = 0; i < menu_n; i++) {
+            y = 46 - 7 * i;
+            if (menu_item[i] == M_GRID)
                 TEXTF(bmp, FONT5, 21, y, -1, "CREATE GRID <%d>", menu_grid[menu_g]);
             else
-                TEXTF(bmp, FONT5, 21, y, -1, "%s", menu_txt[i]);
+                TEXTF(bmp, FONT5, 21, y, -1, "%s", menu_txt[menu_item[i]]);
             if (i == menu_sel)
-                FILLRECT(bmp, 18, y - 1, 109, y + 6, -1);
+                FILLRECT(bmp, 18, y - 1, 109, y + 5, -1);
         }
     }
 }
