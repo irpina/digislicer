@@ -1,3 +1,4 @@
+| SPDX-License-Identifier: GPL-2.0-or-later
 | Digitakt mk1 MAIN OS 1.53: stock routines and data this mod calls or reads
         | ---- stock routines and data (MAIN OS 1.53) ----------------------
         .equ OP_NEW,      0x400d4180    | operator new(size) -> d0

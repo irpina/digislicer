@@ -1,3 +1,4 @@
+| SPDX-License-Identifier: GPL-2.0-or-later
 | digislicer: SLICE GRID = AUTO and the slice editor (slice.c); the glue:
 | the patched sites and the hook-bus handlers (see README.md).
         .include "os153.inc"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* slice.c: automatic and custom slicing for the SLICE machine (GRID = AUTO).
  *
  * The stock SLICE machine (machine type 3) divides a sample into an equal
