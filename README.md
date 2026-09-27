@@ -34,7 +34,7 @@ stock OS file and the mods you pick; nothing from Elektron is distributed.
 | knob A | select a slice (one per notch, as the SAMP knob steps) |
 | knob B | move its start |
 | knob C | move its start by single samples |
-| knob D | zoom |
+| knob D | zoom, smoothly, around the selected slice's start: turn it faster to zoom faster |
 | LEFT / RIGHT | previous / next slice, played while held |
 | trig keys | select slice 1-16 and play it while held (UP / DOWN: 17-32, 33-48, 49-64) |
 | FUNC + LEFT / RIGHT | previous / next sample slot (the track's SAMP moves with it) |
@@ -43,6 +43,10 @@ stock OS file and the mods you pick; nothing from Elektron is distributed.
 | **YES** | **the slice menu** |
 | NO | close (the slices are kept) |
 | PLAY, STOP | work as ever |
+
+The bottom row of the screen names what knobs A-D do: SEL, MOVE, FINE,
+ZOOM. The top row shows the selected slice and how many there are, the
+sample slot, and where the slice starts.
 
 **The slice menu** (YES): UP / DOWN or knob A choose, YES does it, NO
 backs out.
@@ -68,7 +72,7 @@ You need three things:
     (see [its README](https://github.com/irpina/elekloader#install)). There
     you also need `core-2.0a.elemod`, which is attached to this repository's
     releases too.
-- **This mod:** `digislicer-1.0.elemod`, from
+- **This mod:** `digislicer-1.1.elemod`, from
   [this repository's releases](https://github.com/irpina/digislicer/releases/latest).
 - **The stock OS file:** `Digitakt_OS1.53.syx`, from
   [Elektron's Digitakt downloads](https://www.elektron.se/support-downloads/digitakt).
@@ -78,12 +82,12 @@ You need three things:
 Then build your OS in elekloader's window:
 
 1. **Change stock firmware...** (top right): choose `Digitakt_OS1.53.syx`.
-2. **+ Install from file...**: choose `digislicer-1.0.elemod`. From source,
+2. **+ Install from file...**: choose `digislicer-1.1.elemod`. From source,
    install `core-2.0a.elemod` the same way.
 3. **Tick digislicer.** core is ticked with it. The check below the list should
    say "No conflicts ... Ready to build". To add [digihealth](https://github.com/irpina/digihealth) (FAST AUDIO and SYSTEM INFO), install and tick it as well.
 4. **OS version shown**: the 4 characters the unit will show, for example
-   `SL10`.
+   `SL11`.
 5. **BUILD FIRMWARE**, and save the `.syx`. elekloader verifies it before
    writing it.
 
@@ -100,8 +104,8 @@ Or on the command line (elekloader from source):
 
 ```bash
 python -m elekloader.patch --stock Digitakt_OS1.53.syx \
-    --mod core-2.0a.elemod --mod digislicer-1.0.elemod \
-    --out Digitakt_OS1.53-slicer.syx --version SL10
+    --mod core-2.0a.elemod --mod digislicer-1.1.elemod \
+    --out Digitakt_OS1.53-slicer.syx --version SL11
 ```
 
 **Recovery:** elekloader never changes the bootloader, so the stock OS
@@ -116,8 +120,8 @@ Ubuntu, `apt install binutils-m68k-linux-gnu gcc-m68k-linux-gnu`; on
 Windows, inside WSL) and elekloader:
 
 ```bash
-python -m elekloader.sdk.build . --stock Digitakt_OS1.53.syx       # -> out/digislicer-1.0.elemod
-python -m elekloader.lint out/digislicer-1.0.elemod --stock Digitakt_OS1.53.syx --with core-2.0a.elemod
+python -m elekloader.sdk.build . --stock Digitakt_OS1.53.syx       # -> out/digislicer-1.1.elemod
+python -m elekloader.lint out/digislicer-1.1.elemod --stock Digitakt_OS1.53.syx --with core-2.0a.elemod
 ```
 
 | file | |
@@ -148,6 +152,19 @@ mods through the real bootloader.
 - **On a unit:** the editor, its slices playing on the pattern, the
   arrows and the trig-key audition were tried on a Digitakt mk1 in the
   custom builds this mod comes from.
+- **1.1 (the smooth zoom and the knob labels):**
+  - Knob A gets the same events and filter state as in 1.0, event for
+    event.
+  - Knob D zooms 3/8 of an octave a notch, to the deepest zoom and back.
+  - At every zoom level tried, each slice start is drawn in the column
+    whose waveform holds it.
+  - The editor, menu and arrow tests pass: split, delete, the menu, the
+    audition windows, the store on the +Drive, and the arrows. B moves a
+    start one view column at a time, so its steps now follow the finer
+    zoom.
+  - A cold boot of core + digislicer 1.1 against 1.0: every screen and
+    the audio are identical.
+  - Not yet tried on a unit.
 
 ## Licence
 

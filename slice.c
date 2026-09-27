@@ -559,6 +559,7 @@ struct slc_ed {
     s32 cleared;                   /* DELETE ALL: the sample goes back to its grid */
     s8 lo[WCOLS], hi[WCOLS];       /* peaks per column, -31..31 */
     s32 peaks_ok;
+    s32 zoom;                      /* the view spans len / 2^(zoom / ZSTEPS) */
 };
 struct slc_ed slc_ed;
 static struct an ed_an;            /* the editor's (synchronous) analysis */
@@ -650,6 +651,7 @@ s32 slc_ed_open(u32 slot)
     slc_ed.sel = 0;
     slc_ed.v0 = 0;
     slc_ed.v1 = len;
+    slc_ed.zoom = 0;
     slc_ed.changed = 0;
     slc_ed.cleared = 0;
     slc_ed.peaks_ok = 0;
@@ -791,20 +793,33 @@ void slc_ed_move(s32 d, s32 fine)
     ed_follow();
 }
 
-/* Zoom around the selected slice's start: d > 0 in (halving the span). */
+/* The zoom moves in steps of 1/ZSTEPS octave: the view's span at level z
+ * is len / 2^(z / ZSTEPS), from the whole sample (0) down to no fewer
+ * than two samples a column. zoom_frac[f] is 256 / 2^(f / ZSTEPS). */
+#define ZSTEPS 16
+static const u16 zoom_frac[ZSTEPS] = {
+    256, 245, 235, 225, 215, 206, 197, 189, 181, 173, 166, 159, 152, 146, 140, 134
+};
+
+static u32 zoom_span(s32 z)
+{
+    u32 s = slc_ed.len >> (z / ZSTEPS), f = zoom_frac[z % ZSTEPS];
+    return (s >> 8) * f + (((s & 255) * f) >> 8);
+}
+
+/* Zoom around the selected slice's start by d steps (d > 0 in). */
 void slc_ed_zoom(s32 d)
 {
-    u32 span = slc_ed.v1 - slc_ed.v0, c = slc_ed.pts[slc_ed.sel];
-    while (d > 0 && span > WCOLS * 2) {
-        span /= 2;
-        d--;
-    }
-    while (d < 0 && span < slc_ed.len) {
-        span *= 2;
-        d++;
-    }
-    if (span > slc_ed.len)
-        span = slc_ed.len;
+    s32 z = slc_ed.zoom + d;
+    u32 span, c = slc_ed.pts[slc_ed.sel];
+    if (z < 0)
+        z = 0;
+    while (z > 0 && zoom_span(z) < WCOLS * 2)
+        z--;
+    if (z == slc_ed.zoom)
+        return;
+    slc_ed.zoom = z;
+    span = zoom_span(z);
     slc_ed.v0 = c > span / 2 ? c - span / 2 : 0;
     if (slc_ed.v0 + span > slc_ed.len)
         slc_ed.v0 = slc_ed.len - span;
@@ -878,13 +893,16 @@ const s8 *slc_ed_peaks(s32 which)
     return which ? slc_ed.hi : slc_ed.lo;
 }
 
-/* Column (0..WCOLS-1) of a sample position in the view, or -1 outside it. */
+/* Column (0..WCOLS-1) of a sample position in the view, or -1 outside it:
+ * the column whose peaks (ed_peaks) cover it. Column c starts at
+ * c span / WCOLS, so this is (x WCOLS + WCOLS - 1) / span, which fits 32
+ * bits since span <= 2^25. */
 s32 slc_ed_col(u32 pos)
 {
-    u32 q = (slc_ed.v1 - slc_ed.v0) / WCOLS, c;
+    u32 span = slc_ed.v1 - slc_ed.v0, c;
     if (pos < slc_ed.v0 || pos >= slc_ed.v1)
         return -1;
-    c = (pos - slc_ed.v0) / (q ? q : 1);
+    c = ((pos - slc_ed.v0) * WCOLS + WCOLS - 1) / span;
     return c < WCOLS ? (s32)c : WCOLS - 1;
 }
 
@@ -1185,8 +1203,8 @@ void slc_ui_key(const u8 *ev)
     }
 }
 
-/* Select (A, and the menu) and zoom (D) step as the stock list parameters
- * do (SAMP, PLAY MODE): through the firmware's own knob filter 0x400c05ee
+/* Select (A, and the menu) steps as the stock list parameters do (SAMP,
+ * PLAY MODE): through the firmware's own knob filter 0x400c05ee
  * (state, event, config) with its default config 0x4208cb64. That config
  * notches: a knob's level rests at 48, a count takes 3 off it, nothing
  * steps above 24, then a step every 6 counts, and each step puts 48 back.
@@ -1196,7 +1214,19 @@ void slc_ui_key(const u8 *ev)
  * below 48 back up (the dead zone returns after a pause); slc_ui_tick runs
  * that tick 3 times a 30 Hz UI tick. The moves (B) sum counts, a step
  * every 4, keeping the acceleration; the fine move (C) is a sample a
- * count. */
+ * count.
+ *
+ * The zoom (D) is not a list: through the notch filter it moved an octave
+ * a notch, with a dead zone before each one, which was far too slow on
+ * the unit. It takes every count instead, as 1/16 of an octave, and a
+ * faster turn (more counts an event: the unit sent 1 to 21) counts for
+ * more: an event of d counts zooms d + d |d| / 8 steps. So 1 count is
+ * 1 step (4%), 4 counts 6, 8 counts 16 (an octave), 21 counts 76. */
+static s32 zoom_steps(s32 d)
+{
+    s32 a = d < 0 ? -d : d;
+    return d + d * a / 8;
+}
 typedef s32 (*knobf_t)(void *st, const u8 *ev, const void *cfg);
 typedef void (*knobt_t)(void *st, void *timeout);
 #define KNOB_FILTER ((knobf_t)0x400c05ee)
@@ -1244,8 +1274,10 @@ void slc_ui_enc(const u8 *ev)
     s32 enc = *(const s32 *)(ev + 12), d = *(const s32 *)(ev + 16);
     s32 steps;
     slc_dbg.enc[slc_dbg.enc_i++ & 31] = ((u32)enc << 24) | ((u32)d & 0xffffff);
-    if (enc == 1 || enc == 4)
+    if (enc == 1)
         steps = KNOB_FILTER(knob_st, ev, KNOB_NOTCH);
+    else if (enc == 4)
+        steps = zoom_steps(d);
     else
         steps = enc == 3 ? d : enc_counts(enc, d, 0);
     if (steps && menu_open) {
@@ -1278,8 +1310,13 @@ void slc_ui_enc(const u8 *ev)
     }
 }
 
-/* y = 0 is the bottom row. Top band 55..63: slice and position; waveform
- * 10..52 around 31; bottom band 0..8: hints. */
+/* y = 0 is the bottom row. Top band 55..63: the slice, the sample slot,
+ * the position and the trig keys' page; waveform 10..52 around 31; bottom
+ * band 0..8: what knobs A-D do, in four columns as the stock pages lay
+ * out their parameters (or the menu's keys while it is open). The font is
+ * 4 pixels a character, so a row holds 32. */
+static const char *const knob_txt[4] = { "A:SEL", "B:MOVE", "C:FINE", "D:ZOOM" };
+
 void slc_ui_draw(void *bmp)
 {
     const s8 *lo = slc_ed_peaks(0), *hi = slc_ed_peaks(1);
@@ -1289,7 +1326,8 @@ void slc_ui_draw(void *bmp)
     FILLRECT(bmp, 0, 0, 127, 63, 0);
     TEXTF(bmp, FONT5, 1, 57, -1, "SL %d/%d %s", slc_ed.sel + 1, slc_ed.n,
           slc_ed.cleared ? "GRID" : slc_ed.changed ? "EDIT" : (slc_ed.custom ? "USER" : "AUTO"));
-    TEXTF(bmp, FONT5, 72, 57, -1, "%d.%03ds", p / 48000, (p % 48000) / 48);
+    TEXTF(bmp, FONT5, 57, 57, -1, "SMP%d", slc_ed.slot);
+    TEXTF(bmp, FONT5, 85, 57, -1, "%d.%03ds", p / 48000, (p % 48000) / 48);
     for (c = 0; c < WCOLS; c++) {
         s32 y0 = 31 + (lo[c] * 18) / 32, y1 = 31 + (hi[c] * 18) / 32;
         if (y1 < y0)
@@ -1314,11 +1352,13 @@ void slc_ui_draw(void *bmp)
         FILLRECT(bmp, a, 9, b, 10, 1);
         FILLRECT(bmp, a, 52, b, 53, 1);
     }
-    TEXTF(bmp, FONT5, 1, 1, -1, menu_open ? "UP/DN YES:DO NO:BACK" : "A:SEL B:MOVE YES:MENU");
-    if (!menu_open)
-        TEXTF(bmp, FONT5, 96, 1, -1, "SMP%d", slc_ed.slot);
+    if (menu_open)
+        TEXTF(bmp, FONT5, 1, 1, -1, "UP/DN YES:DO NO:BACK");
+    else
+        for (i = 0; i < 4; i++)
+            TEXTF(bmp, FONT5, 1 + 32 * i, 1, -1, "%s", knob_txt[i]);
     if (ui_page)
-        TEXTF(bmp, FONT5, 110, 57, -1, "P%d", ui_page + 1);
+        TEXTF(bmp, FONT5, 117, 57, -1, "P%d", ui_page + 1);
     if (menu_open) {
         FILLRECT(bmp, 16, 8, 111, 54, 0);
         FRAMERECT(bmp, 16, 8, 111, 54, 1);
