@@ -439,8 +439,10 @@ static void publish(u32 slot, const u32 *key, u32 n, const u32 *pts)
 }
 
 void slc_ui_tick(void);
+s32 slc_ui_playing(void);
 
-void slice_tick(void)
+/* ev_tick, 30 times a second (ctrl: the view controller). */
+void slice_tick(u8 *ctrl)
 {
     u32 n, pcm, len, hash;
 #ifdef SLICE_NOTICK
@@ -448,8 +450,11 @@ void slice_tick(void)
 #endif
     if (!slc_any)
         return;
-    if (ed_is_open())
+    if (ed_is_open()) {
         slc_ui_tick();                       /* the editor's knobs (their dead zone) */
+        if (slc_ui_playing())
+            ctrl[0x20] = 1;                  /* the playhead moves: recompose */
+    }
     store_tick();                            /* the custom points on the +Drive */
     if (!slc_loaded)
         return;                              /* none filled before they are known */
@@ -541,6 +546,133 @@ u64 slice_auto_window(const s8 *p, u32 note, u32 len, s32 v)
     if ((u8)p[2] > 1)
         return ((u64)from << 32) | to;
     return ((u64)to << 32) | from;
+}
+
+/* ---- PIPO: ping-pong loops on the SLICE machine ------------------------------- */
+/* PLAY (a voice's parameters + 2) is 0 REV, 1 REV.L, 2 FWD.L, 3 FWD; this mod
+ * adds 4, PIPO: the parameter's range, its name and its icon are in glue.s.
+ * The render calls the SLICE window function every block for every SLICE
+ * voice (voice 0 from 0x40075184, voices 1-7 from the loop in 0x400757fe) and
+ * reads PLAY straight after it, at one place in each (glue.s pp_read0 and
+ * pp_readv), and once more for the loop flag alone (pp_read2). There a PIPO
+ * voice reads as FWD.L or REV.L, as pp_dir says (FWD.L for the loop flag);
+ * its PLAY itself stays 4. slice_win (pp_win, pp_step) turns the voice when it
+ * nears an end of its window, and returns the window's ends in the order the
+ * direction needs. Each note starts forward. Stock firmware plays PIPO as FWD.
+ *
+ * A turn made at a block's start would land about PP_K samples off where the
+ * previous direction's output left off: the resampler's delay. So the
+ * position moves on by PP_K at a turn, and the turn comes early enough (a
+ * block's advance plus PP_K from the end) to keep it inside the window.
+ * PP_K was measured in the emulator, whose resampler is the device's: with
+ * it, every turn from -12 to +24 semitones steps as the waveform does. */
+#define PP_PLAY   4
+#define PP_K      14
+#define PP_TRIG   (*(volatile u32 *)0x80001228)              /* bit v: voice v starts */
+#define PP_POS(v) (*(volatile s32 *)(0x8000EDC8 + 94 * (v)))  /* V(v) + 4 */
+
+s8 pp_dir[8];                              /* read by glue.s: 1 forward, -1 back */
+static u8 pp_on[8], pp_have[8];
+static s32 pp_last[8];
+
+/* From slice_win, before the window: 1 if voice v plays PIPO. A note (or
+ * PLAY just set to PIPO) starts it forward. */
+s32 pp_pre(const u8 *p, s32 v)
+{
+    if (v < 0 || v > 7)
+        return 0;
+    if (p[2] != PP_PLAY) {
+        pp_on[v] = 0;
+        return 0;
+    }
+    if (!pp_on[v] || (PP_TRIG >> v & 1)) {
+        pp_on[v] = 1;
+        pp_dir[v] = 1;
+        pp_have[v] = 0;
+    }
+    return 1;
+}
+
+/* From slice_win (pp_win), after the window (a, b: its ends, forward order):
+ * turns the voice if it is due, and returns the window's ends in the order
+ * its direction needs (d0:d1, the render's start and end). The position is
+ * known only from the block after a note's first (the render sets it after
+ * this call), so turns wait for two.
+ *
+ * A new window with no new note takes effect a block late. A trig's locks
+ * reach the voice's parameters a block before its note starts, while the
+ * old note fades out, so that block would give the old note the new note's
+ * window: turned toward it, it played its last 32 samples backwards. Now
+ * that block plays on in the old note's window. (A knob turned while a note
+ * plays waits the same 0.67 ms.) */
+static u32 pp_lo[8], pp_hi[8];             /* the window in use */
+static u32 pp_nlo[8], pp_nhi[8];           /* the window asked for last block */
+
+u64 pp_step(s32 v, u32 a, u32 b)
+{
+    s32 lo = a < b ? a : b, hi = a < b ? b : a, pos = PP_POS(v), adv;
+    if (!pp_have[v] || ((u32)lo == pp_nlo[v] && (u32)hi == pp_nhi[v])) {
+        pp_lo[v] = lo;
+        pp_hi[v] = hi;
+    }
+    pp_nlo[v] = lo;
+    pp_nhi[v] = hi;
+    lo = pp_lo[v];
+    hi = pp_hi[v];
+    if (pp_have[v] > 1) {
+        adv = pos - pp_last[v];
+        if (adv < 0)
+            adv = -adv;
+        if (adv < 16 || adv > 4096)          /* none, or a jump: a block's worth */
+            adv = 32;
+        if (pp_dir[v] > 0 && pos + adv + PP_K >= hi) {
+            pp_dir[v] = -1;
+            PP_POS(v) = pos += PP_K;
+        } else if (pp_dir[v] < 0 && pos - adv - PP_K <= lo) {
+            pp_dir[v] = 1;
+            PP_POS(v) = pos -= PP_K;
+        }
+    } else
+        pp_have[v]++;
+    pp_last[v] = pos;
+    if (pp_dir[v] < 0)
+        return ((u64)(u32)hi << 32) | (u32)lo;
+    return ((u64)(u32)lo << 32) | (u32)hi;
+}
+
+/* PIPO's icon: the stock FWD and REV icons together (|<-->|), built once from
+ * the PLAY icon set's own bitmaps. A Bitmap (BLIT 0x400c2960): +4 width, +8
+ * height, +0xc words a column, +0x10 bits, +0x14 mask, 0x1c bytes. The OS
+ * returns pointers in d0, where gcc looks for integers (it takes pointers
+ * from a0), so the picker and pp_icon are declared to return a u32. */
+#define ICON_SET  ((void *)0x421f9480)
+#define ICON_PICK ((u32 (*)(void *, s32, s32))0x400c2e0c)
+static u32 pp_bm[7], pp_bits[64], pp_mask[64];
+static s32 pp_bm_ok;
+
+u32 pp_icon(void)
+{
+    const u32 *f, *r;
+    u32 n, i;
+    if (pp_bm_ok)
+        return (u32)pp_bm;
+    f = (const u32 *)ICON_PICK(ICON_SET, 3, 0);
+    r = (const u32 *)ICON_PICK(ICON_SET, 0, 0);
+    if (!f || !r)
+        return (u32)f;
+    n = f[1] * f[3];
+    if (n > 64 || r[1] != f[1] || r[2] != f[2] || r[3] != f[3])
+        return (u32)f;                       /* not the icons expected: FWD's */
+    for (i = 0; i < 7; i++)
+        pp_bm[i] = f[i];
+    for (i = 0; i < n; i++) {
+        pp_bits[i] = ((const u32 *)f[4])[i] | ((const u32 *)r[4])[i];
+        pp_mask[i] = ((const u32 *)f[5])[i] | ((const u32 *)r[5])[i];
+    }
+    pp_bm[4] = (u32)pp_bits;
+    pp_bm[5] = (u32)pp_mask;
+    pp_bm_ok = 1;
+    return (u32)pp_bm;
 }
 
 /* ---- the slice editor's model ------------------------------------------------- */
@@ -1008,11 +1140,11 @@ s32 slc_ed_col(u32 pos)
 }
 
 /* ---- the slice editor's screen and controls ------------------------------------ */
-/* Opened by holding YES on the SRC page of a SLICE track (slc_ui_srckey,
- * from our wrapper of the SRC page's key handler). While it is open the
- * main loop's key and encoder events come here first and go no further
- * (sysinfo.s ed_key / ed_enc), and hook_draw draws it over the whole
- * screen after the views have drawn.
+/* Opened by pressing SRC on a DIGISLICER track's SRC page (slc_ui_srcpost,
+ * from our wrapper of the SRC page's key handler): the page's waveform
+ * view. While it is open the main loop's key and encoder events come here
+ * first and most go no further (glue.s slc_key / slc_enc, slc_ui_key), and
+ * slc_draw draws it over the whole screen after the views have drawn.
  *
  *   encoder A  select a slice        YES      the menu: ADD SLICE HERE (at
  *   encoder B  move its start                 the cursor), SPLIT SLICE, DELETE
@@ -1020,7 +1152,7 @@ s32 slc_ed_col(u32 pos)
  *   encoder D  zoom (at the cursor)           (LEFT/RIGHT: 4..64), DELETE ALL
  *   encoder H  zoom vertically       FUNC+NO  delete the slice
  *   LEVEL      move the cursor (the view scrolls with it)
- *   trig keys  select and audition   NO       done (kept for this sample)
+ *   trig keys  select and audition   NO, SRC  done (kept for this sample)
  *              slice 1-16 (UP/DOWN: 17-32, ...)
  *   LEFT/RIGHT the previous/next slice, played while held
  *   FUNC+LEFT/RIGHT the previous/next sample (the track's SAMP)
@@ -1052,7 +1184,13 @@ typedef s32 (*machine_t)(void *view);
 #define K_DOWN  15
 #define K_LEFT  16
 #define K_RIGHT 17
+#define K_TRIG  19
+#define K_SRC   20
+#define K_FLTR  21
+#define K_AMP   22
+#define K_LFO   23
 #define K_TRIG1 24
+#define DSL_MACHINE 5                      /* DIGISLICER (glue.s dsl_machine) */
 
 volatile s32 slc_aud_voice = -1;   /* while set, every start of this voice plays ... */
 volatile s32 slc_aud_slice;        /* ... this slice (slice_auto_window) */
@@ -1126,21 +1264,33 @@ static void aud_start(s32 k)
 static void knob_reset(void);
 static void menu_reset(void);
 
-/* The SRC page's key handler, first: hold YES (its first repeat) on a
- * SLICE track opens the editor on the page's sample slot. Returns 1 if
- * the event was taken. */
-s32 slc_ui_srckey(void *view, const u8 *ev)
+/* After the SRC page's key handler: pressing SRC on the SRC page steps its
+ * sub-page (view + 0x90: 0 the parameters, 1 the waveform view). On a
+ * DIGISLICER track the waveform view is the editor, opened on the page's
+ * sample slot (its grid widget's, which core sets up for DIGISLICER as
+ * for SLICE). */
+#define SUBPAGE(v) (*(s32 *)((u8 *)(v) + 0x90))
+void slc_ui_srcpost(void *view)
 {
-    s32 key = *(const s32 *)(ev + 12), fl = *(const s32 *)(ev + 16), slot;
-    if (key != K_YES || (fl & 9) != 9 || slc_ed.open)
-        return 0;
-    if (MACHINE(view) != 3)
-        return 0;
-    if (!slc_loaded && !store_load())
-        return 0;                            /* the drive is busy: not now */
+    s32 slot;
+    if (slc_ed.open) {
+        if (view == ed_view && !SUBPAGE(view)) {
+            aud_stop();                      /* SRC: back to the parameters */
+            slc_ed_close(1);
+        }
+        return;
+    }
+    if (MACHINE(view) != DSL_MACHINE || !SUBPAGE(view))
+        return;
+    if (!slc_loaded && !store_load()) {
+        SUBPAGE(view) = 0;                   /* the drive is busy: not now */
+        return;
+    }
     slot = *(const s32 *)((const u8 *)view + 524);  /* the SLICE waveform's slot */
-    if (slot < 0 || slot >= SLOTS || !slc_ed_open(slot))
-        return 0;
+    if (slot < 0 || slot >= SLOTS || !slc_ed_open(slot)) {
+        SUBPAGE(view) = 0;
+        return;
+    }
     slc_any = 1;
     slc_want[slot] = 1;
     ed_live();
@@ -1149,7 +1299,16 @@ s32 slc_ui_srckey(void *view, const u8 *ev)
     menu_reset();
     ed_view = view;
     ed_vtrack = TRACK_OF(*(void **)((u8 *)view + 116));
-    return 1;
+}
+
+/* Closing the editor (the edits kept, as ever) takes the SRC page back to
+ * its parameters. */
+static void ed_leave(void)
+{
+    aud_stop();
+    slc_ed_close(1);
+    if (ed_view)
+        SUBPAGE(ed_view) = 0;
 }
 
 /* FUNC+LEFT/RIGHT: the previous or next sample slot that holds a sample. The
@@ -1256,15 +1415,28 @@ static void menu_key(s32 key)
     }
 }
 
-void slc_ui_key(const u8 *ev)
+/* A key while the editor is open -> 1 if the editor takes it.
+ * - SRC goes on to the SRC page, which steps back to its parameters
+ *   (slc_ui_srcpost then closes the editor); FUNC+SRC closes it first and
+ *   goes on to the machine menu.
+ * - TRIG, FLTR, AMP and LFO close it and go on to their pages.
+ * - Everything else is the editor's. */
+s32 slc_ui_key(const u8 *ev)
 {
     s32 key = *(const s32 *)(ev + 12), fl = *(const s32 *)(ev + 16);
     s32 press = (fl & 1) && !(fl & 8), func = fl & 2;
     slc_dbg.key[slc_dbg.key_i++ & 31] = ((u32)key << 16) | (fl & 0xffff);
+    if (key == K_SRC && !func)
+        return 0;
+    if (key == K_SRC || key == K_TRIG || key == K_FLTR || key == K_AMP || key == K_LFO) {
+        if (fl & 1)
+            ed_leave();
+        return 0;
+    }
     if (menu_open) {
         if (press)
             menu_key(key);
-        return;
+        return 1;
     }
     if (key >= K_TRIG1 && key < K_TRIG1 + 16) {
         s32 k = ui_page * 16 + key - K_TRIG1;
@@ -1274,7 +1446,7 @@ void slc_ui_key(const u8 *ev)
             aud_start(k);
         } else if (!(fl & 1))
             aud_stop();
-        return;
+        return 1;
     }
     /* LEFT/RIGHT: the previous/next slice, played while held (as a trig
      * key; held, they repeat). FUNC+LEFT/RIGHT: the previous/next sample. */
@@ -1287,10 +1459,10 @@ void slc_ui_key(const u8 *ev)
             aud_start(slc_ed.sel);
         } else if (!(fl & 1))
             aud_stop();
-        return;
+        return 1;
     }
     if (!press)
-        return;
+        return 1;
     switch (key) {
     case K_YES:
         if (func) {
@@ -1303,10 +1475,8 @@ void slc_ui_key(const u8 *ev)
         if (func) {
             slc_ed_delete();
             ed_live();
-        } else {
-            aud_stop();
-            slc_ed_close(1);
-        }
+        } else
+            ed_leave();
         break;
     case K_UP:
         if (ui_page < 3)
@@ -1317,6 +1487,7 @@ void slc_ui_key(const u8 *ev)
             ui_page--;
         break;
     }
+    return 1;
 }
 
 /* Select (A, and the menu) steps as the stock list parameters do (SAMP,
@@ -1439,19 +1610,44 @@ void slc_ui_enc(const u8 *ev)
  *   57..61  the selected slice and how many, the sample slot, the trig
  *           keys' page
  *   55      the horizontal zoom: the part of the sample in view
+ *   54..56  the playhead's mark on it
  *   15..53  the waveform, columns 0..WCOLS-1: peaks WY0..WY1 around WMID,
  *           slice starts, the selected slice (its start WY0-2..WY1+2 and
- *           bars), the cursor (an I-beam); the vertical zoom's slider right
- *           of it, x 125..127
+ *           bars), the cursor (an I-beam), the playhead (inverted,
+ *           WY0-3..WY1+3); the vertical zoom's slider right of it,
+ *           x 125..127
  *   8..12   knobs A-D, in four columns as the stock pages lay out their
  *   1..5    parameters, and under them LEVEL (the cursor, and where it is)
  *           and H (under D); while the menu is open, the menu's keys */
 static const char *const knob_txt[4] = { "A:SEL", "B:MOVE", "C:FINE", "D:ZOOM X" };
 
+/* The playhead: where each voice playing the edited sample is, as the
+ * render left it (V(v) + 4) when the frame is drawn. slice_tick recomposes
+ * the frame at 30 Hz while there is one, and once more to erase it. */
+#define VOICE_ON(v) (*(const volatile u8 *)(0x8000EDECu + 94 * (v)))   /* V(v) + 0x28 */
+static s32 ph_shown;
+
+static u32 ph_voices(void)                 /* a bit for each voice playing it */
+{
+    u32 m = 0;
+    s32 v;
+    for (v = 0; v < 8; v++)
+        if (VOICE_ON(v) && *(const volatile u8 *)(VOICE_SLOT + 94 * v) == slc_ed.slot
+            && (u32)PP_POS(v) < slc_ed.len)
+            m |= 1u << v;
+    return m;
+}
+
+s32 slc_ui_playing(void)
+{
+    return ph_voices() != 0 || ph_shown;
+}
+
 void slc_ui_draw(void *bmp)
 {
     const s16 *lo = slc_ed_peaks(0), *hi = slc_ed_peaks(1);
-    s32 c, i, a, b, g = vzoom_gain(), y, cx;
+    s32 c, i, a, b, g = vzoom_gain(), y, cx, px;
+    u32 ph;
     u32 p = slc_ed.pts[slc_ed.sel];
     u32 end = slc_ed.sel + 1 < (s32)slc_ed.n ? slc_ed.pts[slc_ed.sel + 1] : slc_ed.len;
     FILLRECT(bmp, 0, 0, 127, 63, 0);
@@ -1501,6 +1697,19 @@ void slc_ui_draw(void *bmp)
     if (cx >= 0) {                         /* the cursor's ends: an I-beam */
         FILLRECT(bmp, cx > 0 ? cx - 1 : 0, WY0 - 1, cx + 1, WY0 - 1, 1);
         FILLRECT(bmp, cx > 0 ? cx - 1 : 0, WY1 + 1, cx + 1, WY1 + 1, 1);
+    }
+    ph = ph_voices();                      /* the playheads: a line through the */
+    ph_shown = ph != 0;                    /* band, a mark on the view line */
+    for (i = 0; i < 8; i++) {
+        u32 pos;
+        if (!(ph >> i & 1))
+            continue;
+        pos = (u32)PP_POS(i);
+        px = slc_ed_col(pos);
+        if (px >= 0)
+            FILLRECT(bmp, px, WY0 - 3, px, WY1 + 3, -1);
+        px = pos * WCOLS / slc_ed.len;
+        FILLRECT(bmp, px, 54, px, 56, -1);
     }
     if (menu_open)
         TEXTF(bmp, FONT5, 1, 1, -1, "UP/DN YES:DO NO:BACK");
