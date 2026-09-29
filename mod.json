@@ -1,14 +1,23 @@
 {
- "id": "digislicer", "version": "1.2",
+ "id": "digislicer", "version": "2.0",
+ "license": "GPL-2.0-or-later",
  "title": "digislicer", "category": "Sampling", "author": "irpina",
- "description": "A slice editor for the SLICE machine: hold YES on a SLICE track's SRC page to edit a sample's slice points (add at a cursor, split, delete, move, auto-slice on transients, equal grids) and play them from the trig keys. A sample's own slices play on every SLICE track, whatever GRID says, and are kept per sample on the +Drive (/cfw/slices.a, .b). GRID also gets AUTO: slices on the sample's transients.",
+ "description": "A new SRC machine, DIGISLICER: the SLICE machine with a slice editor. Its SRC page is SLICE's; press SRC again for the editor, where you slice the sample where you want (add at a cursor, split, delete, move, auto-slice on transients, equal grids), watch it play and play slices from the trig keys. A sample's own slices play on every DIGISLICER track and are kept per sample on the +Drive (/cfw/slices.a, .b). GRID also gets AUTO (slices on the transients) and PLAY gets PIPO (ping-pong loops). The stock SLICE machine is left as it is.",
  "device": "digitakt-mk1", "os": "1.53",
  "sources": ["glue.s", "slice.c"],
  "sites": [
   {"addr": "0x40074df2", "stock": "4fefffe8725e", "op": "jmp", "target": "slice_win"},
   {"addr": "0x4005fa2e", "stock": "202f000c222f0008", "op": "jmp", "target": "grid_fmt"},
   {"addr": "0x401848dc", "stock": "4003b272", "op": "ptr", "target": "ed_srckey"},
-  {"addr": "0x401ab9b0", "stock": "00000400", "op": "bytes", "new": "00000500"}
+  {"addr": "0x4000ff20", "stock": "4eb940078f0c", "op": "keep2", "target": "dsl_prange"},
+  {"addr": "0x400100c4", "stock": "4eb940078f0c", "op": "keep2", "target": "dsl_prange"},
+  {"addr": "0x4000f534", "stock": "4eb940078f0c", "op": "keep2", "target": "dsl_prange"},
+  {"addr": "0x4000f5fc", "stock": "45f940078f0c", "op": "keep2", "target": "dsl_prange_f"},
+  {"addr": "0x4005f91c", "stock": "2f027401202f000c", "op": "jmp", "target": "play_fmt"},
+  {"addr": "0x4006060a", "stock": "4feffff4202f0014", "op": "jmp", "target": "play_icon"},
+  {"addr": "0x40075282", "stock": "752b00362602", "op": "jsr", "target": "pp_read0"},
+  {"addr": "0x400759dc", "stock": "752a00a02602", "op": "jsr", "target": "pp_readv"},
+  {"addr": "0x400760ba", "stock": "302e00364bed0034", "op": "jsr", "target": "pp_read2"}
  ],
  "subscribe": [
   {"event": "ev_tick", "fn": "slice_tick", "order": 10},
@@ -16,7 +25,10 @@
   {"event": "ev_key", "fn": "slc_key", "order": 50},
   {"event": "ev_enc", "fn": "slc_enc", "order": 50}
  ],
+ "contribute": [
+  {"to": "core_machines", "order": 50, "data": "00000000", "relocs": [[0, "abs32", "sym:dsl_machine", 0]]}
+ ],
  "requires": ["core"],
- "resources": {"names": ["param:SLICE GRID=5", "ui:SRC page:hold YES",
+ "resources": {"names": ["machine:5", "param:SLICE GRID=5", "param:SLICE PLAY=4", "ui:SRC page:SRC twice",
                          "drive:/cfw/slices.a", "drive:/cfw/slices.b"]}
 }
