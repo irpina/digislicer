@@ -30,6 +30,37 @@
   {"addr": "0x40008d40", "stock": "4eb94001c10a", "op": "keep2", "target": "dsl_kbrec"},
   {"addr": "0x40008904", "stock": "4eb940024942", "op": "keep2", "target": "dsl_kbstep"}
  ],
+ "ports": {
+  "1.54": {
+   "defsym": {"OS154": "1"},
+   "cflags": ["-DOS154"],
+   "sites": [
+    {"addr": "0x40074df2", "stock": "4fefffe8725e", "op": "jmp", "target": "slice_win"},
+    {"addr": "0x4005fa2e", "stock": "202f000c222f0008", "op": "jmp", "target": "grid_fmt"},
+    {"addr": "0x40184bdc", "stock": "4003b272", "op": "ptr", "target": "ed_srckey"},
+    {"addr": "0x4000ff20", "stock": "4eb940078f0c", "op": "keep2", "target": "dsl_prange"},
+    {"addr": "0x400100c4", "stock": "4eb940078f0c", "op": "keep2", "target": "dsl_prange"},
+    {"addr": "0x4000f534", "stock": "4eb940078f0c", "op": "keep2", "target": "dsl_prange"},
+    {"addr": "0x4000f5fc", "stock": "45f940078f0c", "op": "keep2", "target": "dsl_prange_f"},
+    {"addr": "0x4005f91c", "stock": "2f027401202f000c", "op": "jmp", "target": "play_fmt"},
+    {"addr": "0x4006060a", "stock": "4feffff4202f0014", "op": "jmp", "target": "play_icon"},
+    {"addr": "0x40075282", "stock": "752b00362602", "op": "jsr", "target": "pp_read0"},
+    {"addr": "0x400759dc", "stock": "752a00a02602", "op": "jsr", "target": "pp_readv"},
+    {"addr": "0x400760ba", "stock": "302e00364bed0034", "op": "jsr", "target": "pp_read2"},
+    {"addr": "0x40028f3c", "stock": "4feffff448d70c04", "op": "jmp", "target": "dsl_kbpred"},
+    {"addr": "0x400a1820", "stock": "4feffff448d70c04", "op": "jmp", "target": "dsl_kbpred2"},
+    {"addr": "0x40029d64", "stock": "123c004bb284", "op": "jsr", "target": "dsl_kblim"},
+    {"addr": "0x4002965a", "stock": "4a06660e7007b0aeffd46d0a103c00546006704b6002707f", "op": "jmp", "target": "dsl_kbled"},
+    {"addr": "0x40025338", "stock": "1028038e6002", "op": "jsr", "target": "dsl_kbpget"},
+    {"addr": "0x40025344", "stock": "4feffff07003", "op": "jmp", "target": "dsl_kbpage"},
+    {"addr": "0x400299b2", "stock": "4879401c313d", "op": "jsr", "target": "dsl_kbpfmt"},
+    {"addr": "0x400a219e", "stock": "4879401d01f6", "op": "jsr", "target": "dsl_kbmfmt"},
+    {"addr": "0x400d5766", "stock": "723fb2b94020c64c", "op": "jsr", "target": "dsl_kbnote"},
+    {"addr": "0x40008d40", "stock": "4eb94001c10a", "op": "keep2", "target": "dsl_kbrec"},
+    {"addr": "0x40008904", "stock": "4eb940024942", "op": "keep2", "target": "dsl_kbstep"}
+   ]
+  }
+ },
  "subscribe": [
   {"event": "ev_tick", "fn": "slice_tick", "order": 10},
   {"event": "ev_draw", "fn": "slc_draw", "order": 90},

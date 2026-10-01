@@ -7,7 +7,7 @@ the sequencer and the trig keys. There is no need to save a sliced copy to
 the +Drive first.
 
 It is an [elekloader](https://github.com/irpina/elekloader) mod for OS
-1.53. elekloader builds a custom OS file on your own machine, from your
+1.53 and 1.54, a file for each. elekloader builds a custom OS file on your own machine, from your
 stock OS file and the mods you pick; nothing from Elektron is distributed.
 
 ## What it does
@@ -147,23 +147,27 @@ You need three things:
     needs, is built in.
   - **Other systems:** run elekloader from source with Python 3.9 or newer
     (see [its README](https://github.com/irpina/elekloader#install)). There
-    you also need `core-2.1.elemod`, which is attached to this repository's
-    releases too.
+    you also need core 2.1 for your OS, `core-2.1.elemod` (1.53) or
+    `core-2.1-os1.54.elemod` (1.54), which are attached to this
+    repository's releases too.
   - digislicer 2.0 and later need **core 2.1** or later (its machine
     slots). The Windows app builds with the core it bundles, so it needs a
-    release with core 2.1.
-- **This mod:** `digislicer-2.1.elemod`, from
-  [this repository's releases](https://github.com/irpina/digislicer/releases/latest).
-- **The stock OS file:** `Digitakt_OS1.53.syx`, from
+    release with core 2.1, and for OS 1.54 elekloader 0.4.0 or later.
+- **This mod**, from
+  [this repository's releases](https://github.com/irpina/digislicer/releases/latest):
+  `digislicer-2.1.elemod` for OS 1.53, `digislicer-2.1-os1.54.elemod` for
+  OS 1.54. They are the same mod.
+- **The stock OS file** your unit runs: `Digitakt_OS1.54.syx` or
+  `Digitakt_OS1.53.syx`, from
   [Elektron's Digitakt downloads](https://www.elektron.se/support-downloads/digitakt).
-  The mod is for the Digitakt mk1 on OS 1.53 only; elekloader recognises
-  the file by its hash.
+  elekloader recognises it by its hash, and refuses a mod file made for
+  the other OS.
 
 Then build your OS in elekloader's window:
 
-1. **Change stock firmware...** (top right): choose `Digitakt_OS1.53.syx`.
-2. **+ Install from file...**: choose `digislicer-2.1.elemod`. From source,
-   install `core-2.1.elemod` the same way.
+1. **Change stock firmware...** (top right): choose your stock OS file.
+2. **+ Install from file...**: choose the digislicer file for that OS. From
+   source, install its core the same way.
 3. **Tick digislicer.** core is ticked with it. The check below the list should
    say "No conflicts ... Ready to build". To add [digihealth](https://github.com/irpina/digihealth) (FAST AUDIO and SYSTEM INFO), install and tick it as well.
 4. **OS version shown**: the 4 characters the unit will show, for example
@@ -183,9 +187,9 @@ Don't turn it off until the upgrade is done.
 Or on the command line (elekloader from source):
 
 ```bash
-python -m elekloader.patch --stock Digitakt_OS1.53.syx \
-    --mod core-2.1.elemod --mod digislicer-2.1.elemod \
-    --out Digitakt_OS1.53-slicer.syx --version DS21
+python -m elekloader.patch --stock Digitakt_OS1.54.syx \
+    --mod core-2.1-os1.54.elemod --mod digislicer-2.1-os1.54.elemod \
+    --out Digitakt_OS1.54-slicer.syx --version DS21
 ```
 
 **Recovery:** elekloader never changes the bootloader, so the stock OS
@@ -201,16 +205,18 @@ Windows, inside WSL) and elekloader:
 
 ```bash
 python -m elekloader.sdk.build . --stock Digitakt_OS1.53.syx       # -> out/digislicer-2.1.elemod
-python -m elekloader.lint out/digislicer-2.1.elemod --stock Digitakt_OS1.53.syx --with core-2.1.elemod
+python -m elekloader.sdk.build . --stock Digitakt_OS1.54.syx       # -> out/digislicer-2.1-os1.54.elemod
+python -m elekloader.lint out/digislicer-2.1-os1.54.elemod --stock Digitakt_OS1.54.syx --with core-2.1-os1.54.elemod
 ```
 
 | file | |
 |---|---|
-| `mod.json` | the mod: its sites, its hook-bus handlers, its resources |
+| `mod.json` | the mod: its sites, its hook-bus handlers, its resources; under `ports`, 1.54's sites |
 | `slice.c` | the transient analysis, the slice tables, the +Drive store, the editor |
 | `kbd.c` | the keyboard's trig slice mode: which tracks have it, their slices, the slice lock a key's note gets, recording |
 | `glue.s` | the DIGISLICER machine (its core descriptor and icon), the patched sites (the SLICE window, GRID's and PLAY's text and icon, the render's PLAY reads, PLAY's and GRID's ranges, the SRC page's key handler, the keyboard's slice layout, its notes and their recording) and the handlers |
-| `os153.inc` | the stock routines it calls |
+| `os153.inc`, `os154.inc` | the stock routines and data `glue.s` uses, for each OS (1.54's port defines `OS154`) |
+| `os153.h`, `os154.h` | the same for `slice.c` and `kbd.c` |
 
 ## How it was checked
 
@@ -367,6 +373,24 @@ mods through the real bootloader.
     pixel for pixel, and the audio is identical apart from 1 ms at its
     silent end, as for 2.0.
   - Not yet tried on a unit.
+- **OS 1.54** (the same mod, with 1.54's addresses), in the emulator:
+  - core + digislicer 2.1 against stock 1.54: every stage passes, and
+    the check's nine screens are identical.
+  - core + digihealth + digineighbor + digislicer for 1.54 against
+    the same four for 1.53, through the same scripts: DIGISLICER
+    chosen in the machine menu (after NEIGHBOR, with its icon), its
+    SRC page, GRID to AUTO and PLAY to PIPO, the keyboard's trig
+    slice mode and its pages; and the NEIGHBOR, FAST AUDIO and SYSTEM
+    INFO scripts. Every screen is identical between the two, but for
+    SYSTEM INFO's readout, whose two pages alternate at different
+    moments.
+    The emulator's cold boot has no samples, so these runs play
+    silence: they check the screens and that nothing sounds, not
+    the audio of a playing sample.
+  - So the editor, your slices and their playback have not been run
+    on 1.54: the same code, with addresses found again in 1.54 (each
+    by its own bytes and by the code that calls it). Not yet tried on
+    a unit.
 
 ## Licence
 

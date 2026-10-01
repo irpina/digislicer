@@ -27,3 +27,23 @@
         .equ IDLE_TCB,    0x4198497C    | the idle task (the init task, parked)
         .equ IDLE_PC,     0x4006932E    | where it spins: bra.b *
         .equ VBR_FN,      0x40001c94    | the call 0x40000538 made
+        | ---- the sites' continuations, and what glue.s calls or reads -------
+        .equ BMP_VT,       0x401b73b4    | the firmware's Bitmap vtable
+        .equ SRCKEY,       0x4003b272    | the SRC page's consumeKeyEvent
+        .equ SPRINTF,      0x40000e82    | sprintf(buffer, format, ...)
+        .equ FMT_S,        0x401d09ca    | "%s"
+        .equ PRANGE,       0x40078f0c    | a parameter's range: (id), a0 the result's place
+        .equ PARAM_VT,     0x4017eb58    | the SRC page's parameter object's vtable
+        .equ SNDREF_VT,    0x40181330    | the vtable of the object at its +16
+        .equ VOICE_SLOT,   0x8000ee20    | V(v) + 0x5C: a voice's sample slot
+        .equ SLICE_WIN_ON, 0x40074df8    | the SLICE window function, past its site
+        .equ PLAY_FMT_ON,  0x4005f924    | PLAY's formatter, past its site
+        .equ PLAY_ICON_ON, 0x40060612    | PLAY's icon lambda, past its site
+        .equ GRID_FMT_ON,  0x4005fa36    | GRID's formatter, past its site
+        .equ KBPRED_ON,    0x40028f44    | the fold slice test, past its site
+        .equ KBPRED2_ON,   0x400a16cc    | the keyboard menu's copy of it, past its site
+        .equ KBLED_ON,     0x40029672    | the keyboard's LEDs, past their site
+        .equ KBPAGE_ON,    0x4002534a    | the slice page's setter, past its site
+        .equ KBPGET_BRA,   0x40025340    | the slice page's getter, past its other branch
+        .equ PREVIEW_STEP, 0x4020c29c    | the preview step, <= 63 when one
+        .equ REC_NOTE,     0x4001c10a    | the UI records a note (app, track, note, vel, ...)

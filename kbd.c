@@ -19,6 +19,12 @@
  *     with that lock would be.
  * With the keyboard off, or on any other machine, nothing changes.
  */
+#ifdef OS154                       /* the Digitakt mk1 1.54 (mod.json's port) */
+#include "os154.h"
+#else                              /* the Digitakt mk1 1.53 */
+#include "os153.h"
+#endif
+
 typedef unsigned char u8;
 typedef signed char s8;
 typedef short s16;
@@ -38,18 +44,18 @@ typedef u32 (*fn1_t)(u32);
 typedef u32 (*fn2_t)(u32, u32);
 typedef s32 (*lockset_t)(u32 trk, s32 step, s32 slot, s32 value);
 typedef s32 (*noteset_t)(u32 trk, s32 step, s32 note);
-#define APP      ((fn0_t)0x4013865a)
-#define TSTATE   ((fn1_t)0x40014d86)       /* (app) -> the TrackState */
-#define KB_ON    ((fn1_t)0x4001d4f0)       /* (TrackState) -> the keyboard is on (a byte) */
-#define ACTIVE   ((fn1_t)0x4001d27e)       /* (TrackState) -> the active track */
-#define KIT      ((fn1_t)0x40014d92)       /* (app) -> the kit */
-#define SOUND    ((fn2_t)0x4000d7be)       /* (kit, t) -> track t's sound */
-#define PATTERN  ((fn1_t)0x40015786)       /* (app) -> the pattern */
-#define PTRACK   ((fn2_t)0x40012a02)       /* (pattern, t) -> its track t */
-#define LOCKSET  ((lockset_t)0x40024768)   /* a p-lock on a step: value = n << 8 */
-#define NOTESET  ((noteset_t)0x40024942)   /* a trig's NOTE: -1 = the track's */
-#define LOCKLIST ((fn0_t)0x400edfe6)       /* a lock list for a voice, emptied */
-#define PREVIEW  (*(volatile u32 *)0x4020c29c)  /* the preview step, <= 63 when one */
+#define APP      ((fn0_t)OS_APP)
+#define TSTATE   ((fn1_t)OS_TSTATE)       /* (app) -> the TrackState */
+#define KB_ON    ((fn1_t)OS_KB_ON)       /* (TrackState) -> the keyboard is on (a byte) */
+#define ACTIVE   ((fn1_t)OS_ACTIVE)       /* (TrackState) -> the active track */
+#define KIT      ((fn1_t)OS_KIT)       /* (app) -> the kit */
+#define SOUND    ((fn2_t)OS_SOUND)       /* (kit, t) -> track t's sound */
+#define PATTERN  ((fn1_t)OS_PATTERN)       /* (app) -> the pattern */
+#define PTRACK   ((fn2_t)OS_PTRACK)       /* (pattern, t) -> its track t */
+#define LOCKSET  ((lockset_t)OS_LOCKSET)   /* a p-lock on a step: value = n << 8 */
+#define NOTESET  ((noteset_t)OS_NOTESET)   /* a trig's NOTE: -1 = the track's */
+#define LOCKLIST ((fn0_t)OS_LOCKLIST)       /* a lock list for a voice, emptied */
+#define PREVIEW  (*(volatile u32 *)OS_PREVIEW)  /* the preview step, <= 63 when one */
 
 /* A sound's or a pattern track's data: its object's vtable slot 10. */
 static u8 *odata(u32 obj)
@@ -138,11 +144,11 @@ static u32 pages_fmt(char *f, s32 len, u32 stock)
 }
 u32 dsl_kb_pfmt(void)
 {
-    return pages_fmt(pfmt, sizeof pfmt - 1, 0x401c2dbd);
+    return pages_fmt(pfmt, sizeof pfmt - 1, OS_PFMT);
 }
 u32 dsl_kb_mfmt(void)
 {
-    return pages_fmt(mfmt, sizeof mfmt - 1, 0x401cfe42);
+    return pages_fmt(mfmt, sizeof mfmt - 1, OS_MFMT);
 }
 
 /* Source 0x40 is not the keyboard's alone: a trig's preview (0x400345a0)
@@ -151,7 +157,7 @@ u32 dsl_kb_mfmt(void)
  * in 0x40028b44. kb_notes marks, per track, the notes 12-75 the keyboard
  * started last (any other call of that note clears it), so recording
  * converts only those. */
-#define KB_CALL 0x40028bb4                 /* NOTEON's return in 0x40028b44 */
+#define KB_CALL OS_KB_CALL                 /* NOTEON's return in 0x40028b44 */
 static u32 kb_notes[8][2];
 
 static s32 kb_note(s32 track, s32 note, s32 set)
