@@ -21,6 +21,12 @@
  * number of samples per tick. slc_n[slot] is written last and zeroed
  * first, so the render sees a whole table or none (and plays the 64 grid).
  */
+#ifdef OS154                       /* the Digitakt mk1 1.54 (mod.json's port) */
+#include "os154.h"
+#else                              /* the Digitakt mk1 1.53 */
+#include "os153.h"
+#endif
+
 typedef unsigned char u8;
 typedef signed char s8;
 typedef short s16;
@@ -31,9 +37,9 @@ typedef unsigned long long u64;
 
 #define SLOTS     128
 #define MAXSL     64
-#define SMP_TAB   0x403193A0u      /* +16 slot: PCM, rate, length, ratio */
-#define REF_TAB   0x421F230Cu      /* +16 slot: the loader's reference; +4 content hash */
-#define VOICE_SLOT 0x8000EE20u     /* V(v) + 0x5C, V = 0x8000EDC4 + 94 v */
+#define SMP_TAB   OS_SMP_TAB      /* +16 slot: PCM, rate, length, ratio */
+#define REF_TAB   OS_REF_TAB      /* +16 slot: the loader's reference; +4 content hash */
+#define VOICE_SLOT OS_VOICE_SLOT     /* V(v) + 0x5C, V = 0x8000EDC4 + 94 v */
 
 #define HOP       128              /* samples per envelope hop (2.7 ms at 48 kHz) */
 #define BUDGET    16384            /* samples analysed per tick */
@@ -122,17 +128,17 @@ static void store_drop(u32 hash, u32 len)
  * call them from the UI task, only while that mutex is free (a sample load
  * holds it for its whole read) and the drive is mounted. */
 typedef struct { u32 inode, pos, writable, open; } ekfile;
-#define EK_OPEN    ((s32 (*)(const char *, const char *, ekfile *))0x400cf178)
-#define EK_READ    ((s32 (*)(void *, s32, ekfile *))0x400ceebe)
-#define EK_WRITE   ((s32 (*)(const void *, s32, ekfile *))0x400cef1e)
-#define EK_CLOSE   ((s32 (*)(ekfile *))0x400cf136)
-#define EK_MKDIR   ((s32 (*)(const char *))0x400cde0c)
-#define EK_LOOKUP  ((s32 (*)(const char *, u32 *, s32, s32, s32))0x400d0aa4)
-#define EK_LOCK    ((void (*)(void *))0x40001884)
-#define EK_UNLOCK  ((void (*)(void *))0x400019b6)
-#define EK_MUTEX   ((void *)0x42685690)
-#define EK_OWNER   (*(volatile u32 *)0x42685690)
-#define EK_MOUNTED (*(volatile u32 *)0x420edc50)
+#define EK_OPEN    ((s32 (*)(const char *, const char *, ekfile *))OS_EK_OPEN)
+#define EK_READ    ((s32 (*)(void *, s32, ekfile *))OS_EK_READ)
+#define EK_WRITE   ((s32 (*)(const void *, s32, ekfile *))OS_EK_WRITE)
+#define EK_CLOSE   ((s32 (*)(ekfile *))OS_EK_CLOSE)
+#define EK_MKDIR   ((s32 (*)(const char *))OS_EK_MKDIR)
+#define EK_LOOKUP  ((s32 (*)(const char *, u32 *, s32, s32, s32))OS_EK_LOOKUP)
+#define EK_LOCK    ((void (*)(void *))OS_EK_LOCK)
+#define EK_UNLOCK  ((void (*)(void *))OS_EK_UNLOCK)
+#define EK_MUTEX   ((void *)OS_EK_MUTEX)
+#define EK_OWNER   (*(volatile u32 *)OS_EK_MUTEX)
+#define EK_MOUNTED (*(volatile u32 *)OS_EK_MOUNTED)
 
 static const char *const slc_path[2] = { "/cfw/slices.b", "/cfw/slices.a" };
 static s32 slc_loaded;             /* 1: loaded (or found none) */
@@ -568,8 +574,8 @@ u64 slice_auto_window(const s8 *p, u32 note, u32 len, s32 v)
  * it, every turn from -12 to +24 semitones steps as the waveform does. */
 #define PP_PLAY   4
 #define PP_K      14
-#define PP_TRIG   (*(volatile u32 *)0x80001228)              /* bit v: voice v starts */
-#define PP_POS(v) (*(volatile s32 *)(0x8000EDC8 + 94 * (v)))  /* V(v) + 4 */
+#define PP_TRIG   (*(volatile u32 *)OS_PP_TRIG)              /* bit v: voice v starts */
+#define PP_POS(v) (*(volatile s32 *)(OS_PP_POS + 94 * (v)))  /* V(v) + 4 */
 
 s8 pp_dir[8];                              /* read by glue.s: 1 forward, -1 back */
 static u8 pp_on[8], pp_have[8];
@@ -645,8 +651,8 @@ u64 pp_step(s32 v, u32 a, u32 b)
  * height, +0xc words a column, +0x10 bits, +0x14 mask, 0x1c bytes. The OS
  * returns pointers in d0, where gcc looks for integers (it takes pointers
  * from a0), so the picker and pp_icon are declared to return a u32. */
-#define ICON_SET  ((void *)0x421f9480)
-#define ICON_PICK ((u32 (*)(void *, s32, s32))0x400c2e0c)
+#define ICON_SET  ((void *)OS_ICON_SET)
+#define ICON_PICK ((u32 (*)(void *, s32, s32))OS_ICON_PICK)
 static u32 pp_bm[7], pp_bits[64], pp_mask[64];
 static s32 pp_bm_ok;
 
@@ -1168,15 +1174,15 @@ typedef void (*textf_t)(void *bmp, const void *font, s32 x, s32 y, s32 maxlen, c
 typedef void (*noteon_t)(s32 track, s32 note, s32 vel, s32 src, s32 a, s32 b, s32 c);
 typedef void (*noteoff_t)(s32 track, s32 note, s32 src);
 typedef s32 (*machine_t)(void *view);
-#define FILLRECT ((fillrect_t)0x400c19a6)   /* colour 0 clear, 1 set, < 0 invert */
-#define FRAMERECT ((framerect_t)0x400c178a)
-#define VLINE    ((vline_t)0x400c1040)
-#define PIXEL    ((pixel_t)0x400c0cf4)
-#define TEXTF    ((textf_t)0x400c257c)
-#define FONT5    ((const void *)0x40200b0c)
-#define NOTEON   ((noteon_t)0x400d53dc)
-#define NOTEOFF  ((noteoff_t)0x400d575e)
-#define MACHINE  ((machine_t)0x4002b5d4)    /* the SRC page's machine: 3 = SLICE */
+#define FILLRECT ((fillrect_t)OS_FILLRECT)   /* colour 0 clear, 1 set, < 0 invert */
+#define FRAMERECT ((framerect_t)OS_FRAMERECT)
+#define VLINE    ((vline_t)OS_VLINE)
+#define PIXEL    ((pixel_t)OS_PIXEL)
+#define TEXTF    ((textf_t)OS_TEXTF)
+#define FONT5    ((const void *)OS_FONT5)
+#define NOTEON   ((noteon_t)OS_NOTEON)
+#define NOTEOFF  ((noteoff_t)OS_NOTEOFF)
+#define MACHINE  ((machine_t)OS_MACHINE)    /* the SRC page's machine: 3 = SLICE */
 
 #define K_YES   12
 #define K_NO    13
@@ -1220,7 +1226,7 @@ static s32 aud_track = -1, aud_note;
 /* The SRC page the editor was opened from, and its track. */
 typedef s32 (*trackof_t)(void *obj);
 typedef void (*pageset_t)(void *view, s32 param, s32 delta, s32 flag, u8 *changed);
-#define TRACK_OF ((trackof_t)0x4001d24e)   /* (view + 116) -> the page's track */
+#define TRACK_OF ((trackof_t)OS_TRACK_OF)   /* (view + 116) -> the page's track */
 #define P_SAMP   0x6f                      /* SAMP, as the page's setter knows it */
 static void *ed_view;
 static s32 ed_vtrack = -1;
@@ -1518,9 +1524,9 @@ static s32 zoom_steps(s32 d)
 }
 typedef s32 (*knobf_t)(void *st, const u8 *ev, const void *cfg);
 typedef void (*knobt_t)(void *st, void *timeout);
-#define KNOB_FILTER ((knobf_t)0x400c05ee)
-#define KNOB_TICK   ((knobt_t)0x400c03cc)
-#define KNOB_NOTCH  ((const void *)0x4208cb64)
+#define KNOB_FILTER ((knobf_t)OS_KNOB_FILTER)
+#define KNOB_TICK   ((knobt_t)OS_KNOB_TICK)
+#define KNOB_NOTCH  ((const void *)OS_KNOB_NOTCH)
 static s32 knob_st[64];
 
 static void knob_reset(void)
@@ -1624,7 +1630,7 @@ static const char *const knob_txt[4] = { "A:SEL", "B:MOVE", "C:FINE", "D:ZOOM X"
 /* The playhead: where each voice playing the edited sample is, as the
  * render left it (V(v) + 4) when the frame is drawn. slice_tick recomposes
  * the frame at 30 Hz while there is one, and once more to erase it. */
-#define VOICE_ON(v) (*(const volatile u8 *)(0x8000EDECu + 94 * (v)))   /* V(v) + 0x28 */
+#define VOICE_ON(v) (*(const volatile u8 *)(OS_VOICE_ON + 94 * (v)))   /* V(v) + 0x28 */
 static s32 ph_shown;
 
 static u32 ph_voices(void)                 /* a bit for each voice playing it */

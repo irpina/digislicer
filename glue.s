@@ -2,7 +2,11 @@
 | digislicer: the DIGISLICER machine, GRID = AUTO, PLAY = PIPO and the slice
 | editor (slice.c); the glue: the patched sites and the hook-bus handlers
 | (see README.md).
+        .ifdef  OS154                   | the Digitakt mk1 1.54 (mod.json's port)
+        .include "os154.inc"
+        .else                           | the Digitakt mk1 1.53
         .include "os153.inc"
+        .endif
 
         .section .run, "ax"
 
@@ -14,7 +18,6 @@
 | tracks only: core_track_machine[t] tells them apart. The stock SLICE
 | machine is left as stock has it.
         .equ    DSL_ID, 5
-        .equ    BMP_VT, 0x401b73b4      | the firmware's Bitmap vtable
         .balign 4
         .globl  dsl_machine
 dsl_machine:
@@ -84,7 +87,7 @@ slice_win:
         move.b  %d0, 2(%a0)
 2:      lea     -24(%sp), %sp           | the replaced instructions
         moveq   #94, %d1
-        jmp     0x40074df8
+        jmp     SLICE_WIN_ON
 1:      move.l  16(%sp), -(%sp)         | pp_pre(p, v)
         move.l  8(%sp), -(%sp)
         jsr     pp_pre
@@ -96,7 +99,7 @@ win_body:
         move.b  %d0, slc_any
         move.l  16(%sp), %d0            | the voice
         mulu.w  #94, %d0
-        lea     0x8000ee20, %a1         | V(v) + 0x5C: its sample slot
+        lea     VOICE_SLOT, %a1         | V(v) + 0x5C: its sample slot
         moveq   #0, %d1
         move.b  0(%a1,%d0.l), %d1
         cmpi.l  #128, %d1
@@ -129,7 +132,7 @@ win_body:
         lea     12(%sp), %sp
         lea     -24(%sp), %sp           | the replaced instructions
         moveq   #94, %d1
-        jmp     0x40074df8
+        jmp     SLICE_WIN_ON
 
 | PIPO: win_body with the arguments again (PLAY is 4, so either window
 | returns the forward order: d0 start, d1 end), then pp_step(v, d0, d1),
@@ -211,11 +214,11 @@ play_fmt:
         move.l  %d0, 4(%sp)
         move.l  #str_pipo, %d0
         move.l  %d0, 8(%sp)
-        jmp     0x40000e82
+        jmp     SPRINTF
 1:      move.l  %d2, -(%sp)             | the replaced instructions
         moveq   #1, %d2
         move.l  12(%sp), %d0
-        jmp     0x4005f924
+        jmp     PLAY_FMT_ON
 
 | At 0x4006060a (was: lea -12(sp),sp ; move.l 20(sp),d0, 8 bytes: jmp +
 | nop), PLAY's icon lambda: (sp) = return, 4 its functor, 8 the value (8.8),
@@ -238,10 +241,10 @@ play_icon:
         move.l  20(%sp), %d1
         move.l  %d1, 16(%sp)
         clr.l   20(%sp)
-        jmp     0x400c2960
+        jmp     BLIT
 1:      lea     -12(%sp), %sp           | the replaced instructions
         move.l  20(%sp), %d0
-        jmp     0x40060612
+        jmp     PLAY_ICON_ON
 
 str_pipo:   .asciz  "PIPO"
         .balign 2
@@ -259,14 +262,14 @@ grid_fmt:
         bne.s   1f
         move.l  12(%sp), %d0            | sprintf(buffer, "%s", "AUTO")
         move.l  %d0, 4(%sp)
-        move.l  #0x401d09ca, %d0        | "%s"
+        move.l  #FMT_S, %d0             | "%s"
         move.l  %d0, 8(%sp)
         move.l  #str_auto, %d0
         move.l  %d0, 12(%sp)
-        jmp     0x40000e82
+        jmp     SPRINTF
 1:      move.l  12(%sp), %d0            | the replaced instructions
         move.l  8(%sp), %d1
-        jmp     0x4005fa36
+        jmp     GRID_FMT_ON
 
 str_auto:   .asciz  "AUTO"
         .balign 2
@@ -277,7 +280,6 @@ str_auto:   .asciz  "AUTO"
 
         .equ KEY_PLAY, 10
         .equ KEY_STOP, 11
-        .equ SRCKEY,  0x4003b272        | the SRC page's consumeKeyEvent
         .globl  slc_draw, slc_key, slc_enc, ed_srckey
 
 | slc_draw(bmp, ctrl): the editor, over everything, while it is open.
@@ -369,7 +371,7 @@ dsl_prange_f:                           | from 0x4000f5da: its first argument
 1:      move.l  %a1, -(%sp)             | the object
         move.l  %a0, -(%sp)             | the result's place
         move.l  12(%sp), -(%sp)         | the id
-        jsr     0x40078f0c
+        jsr     PRANGE
         addq.l  #4, %sp
         movea.l (%sp)+, %a0
         movea.l (%sp)+, %a1
@@ -379,11 +381,11 @@ dsl_prange_f:                           | from 0x4000f5da: its first argument
         cmpi.l  #P_GRID, %d1
         bne.s   9f
 2:      move.l  (%a1), %d1
-        cmpi.l  #0x4017eb58, %d1
+        cmpi.l  #PARAM_VT, %d1
         bne.s   9f
         movea.l 16(%a1), %a1
         move.l  (%a1), %d1
-        cmpi.l  #0x40181330, %d1
+        cmpi.l  #SNDREF_VT, %d1
         bne.s   9f
         movea.l 16(%a1), %a1            | the sound
         moveq   #0, %d1
@@ -412,7 +414,7 @@ dsl_kbpred:
         bne.s   1f
         lea     -12(%sp), %sp           | the replaced instructions
         movem.l %d2/%a2-%a3, (%sp)
-        jmp     0x40028f44
+        jmp     KBPRED_ON
 1:      moveq   #1, %d0
         rts
 dsl_kbpred2:
@@ -421,7 +423,7 @@ dsl_kbpred2:
         bne.s   1f
         lea     -12(%sp), %sp
         movem.l %d2/%a2-%a3, (%sp)
-        jmp     0x400a16cc
+        jmp     KBPRED2_ON
 1:      moveq   #1, %d0
         rts
 
@@ -453,16 +455,16 @@ dsl_kbled:
         cmp.l   -44(%fp), %d0
         blt.s   1f
         moveq   #84, %d0
-        jmp     0x40029672
+        jmp     KBLED_ON
 1:      moveq   #127, %d0
-        jmp     0x40029672
+        jmp     KBLED_ON
 2:      moveq   #75, %d0
         tst.l   dsl_kb_n
         beq.s   3f
         moveq   #11, %d0
         add.l   dsl_kb_n, %d0
         moveq   #4, %d5
-3:      jmp     0x40029672
+3:      jmp     KBLED_ON
 
 | The slice page's setter 0x40025344(trk, page), from UP/DOWN in the
 | keyboard and in its menu, straight after the fold slice test (was: lea
@@ -477,7 +479,7 @@ dsl_kbpage:
         move.l  %d0, 8(%sp)
         lea     -16(%sp), %sp           | the replaced instructions
         moveq   #3, %d0
-        jmp     0x4002534a
+        jmp     KBPAGE_ON
 
 | The slice page's getter 0x40025314(trk) reads the page byte at +910 of
 | the pattern track's data (was: move.b 910(a0),d0 ; bra.s 0x40025340 at
@@ -497,7 +499,7 @@ dsl_kbpget:
         cmp.l   %d1, %d0
         ble.s   1f
         move.l  %d1, %d0
-1:      move.l  #0x40025340, (%sp)      | past the stock's other branch
+1:      move.l  #KBPGET_BRA, (%sp)      | past the stock's other branch
         rts
 
 | UP/DOWN's popup, "Slice Page: %d/4" (was: pea 0x401c2dbd at 0x400299b2,
@@ -545,7 +547,7 @@ dsl_kbnote:
         movem.l (%sp), %d0/%a0-%a1
         lea     12(%sp), %sp
         moveq   #63, %d1                | the replaced instructions
-        cmp.l   0x4020c29c, %d1
+        cmp.l   PREVIEW_STEP, %d1
         rts
 
 | Live recording: the UI's note message handler records a note with
@@ -564,7 +566,7 @@ dsl_kbrec:
         move.l  36(%sp), -(%sp)
         move.l  36(%sp), -(%sp)
         move.l  36(%sp), -(%sp)
-        jsr     0x4001c10a
+        jsr     REC_NOTE
         lea     36(%sp), %sp
         move.l  %d0, -(%sp)
         move.l  %a2, -(%sp)
