@@ -15,14 +15,14 @@ stock OS file and the mods you pick; nothing from Elektron is distributed.
 - **The DIGISLICER machine.** Pick it as any machine: FUNC + SRC, then
   DIGISLICER, below SLICE, in the list.
   - Its SRC page is SLICE's, and it plays everything SLICE plays: GRID,
-    SLICE, LEN, slice locks, the keyboard's slice pages.
+    SLICE, LEN, slice locks.
   - Press **SRC again** for its waveform view: the slice editor, on the
     track's sample. SRC, NO or another page key takes you back.
   - The editor opens on the sample's own slices if it has some, and on
     AUTO's otherwise.
 - **Your slices play everywhere.** A sample with its own slices plays them
-  on every DIGISLICER track that uses it, whatever GRID says. SLICE,
-  keyboard slice mode and slice locks pick from them.
+  on every DIGISLICER track that uses it, whatever GRID says. SLICE, the
+  keyboard and slice locks pick from them.
 - **They are kept.** A second after you close the editor, the slices are
   saved to the +Drive per sample (by content, so they follow the sample into
   every project). They live in `/cfw/slices.a` and `/cfw/slices.b`; a `/cfw`
@@ -36,6 +36,23 @@ stock OS file and the mods you pick; nothing from Elektron is distributed.
   - It works on GRID's slices, AUTO's and your own, and across the slices
     LEN spans.
   - The SRC page shows it as `|<-->|`.
+- **The keyboard plays the slices.** Turn the keyboard on (FUNC + TRK) on
+  a DIGISLICER track, and the trig keys work as the Octatrack's trig slice
+  mode:
+  - Trig 1 plays slice 1, trig 2 slice 2, and so on, whatever SLICE is
+    set to. Each plays at the track's pitch: TUNE moves it, the key does
+    not.
+  - The trig keys of the sample's slices light up, every fourth one blue;
+    with fewer than 16 slices, the rest stay dark and silent.
+  - UP / DOWN go to slices 17-32, 33-48 and 49-64, as far as the sample
+    has slices. The popup and the keyboard menu (FUNC + TRK held) count
+    its pages (`Slice Page: 2/3`).
+  - **Live recording** (REC + PLAY) records each key as a trig with a
+    slice lock, which plays that slice at the track's NOTE, as a slice lock
+    entered on the grid does. STEP REC (REC + STOP, then FUNC + a trig key)
+    records the same at the cursor.
+  - With the keyboard off, or on any other machine, the trig keys work as
+    ever.
 - **The stock SLICE machine is left as it is.** Your slices, AUTO, PIPO
   and the editor are DIGISLICER's only.
   - A track you switch from DIGISLICER to SLICE keeps its PLAY setting,
@@ -132,10 +149,10 @@ You need three things:
     (see [its README](https://github.com/irpina/elekloader#install)). There
     you also need `core-2.1.elemod`, which is attached to this repository's
     releases too.
-  - digislicer 2.0 needs **core 2.1** or later (its machine slots). The
-    Windows app builds with the core it bundles, so it needs a release
-    with core 2.1.
-- **This mod:** `digislicer-2.0.elemod`, from
+  - digislicer 2.0 and later need **core 2.1** or later (its machine
+    slots). The Windows app builds with the core it bundles, so it needs a
+    release with core 2.1.
+- **This mod:** `digislicer-2.1.elemod`, from
   [this repository's releases](https://github.com/irpina/digislicer/releases/latest).
 - **The stock OS file:** `Digitakt_OS1.53.syx`, from
   [Elektron's Digitakt downloads](https://www.elektron.se/support-downloads/digitakt).
@@ -145,12 +162,12 @@ You need three things:
 Then build your OS in elekloader's window:
 
 1. **Change stock firmware...** (top right): choose `Digitakt_OS1.53.syx`.
-2. **+ Install from file...**: choose `digislicer-2.0.elemod`. From source,
+2. **+ Install from file...**: choose `digislicer-2.1.elemod`. From source,
    install `core-2.1.elemod` the same way.
 3. **Tick digislicer.** core is ticked with it. The check below the list should
    say "No conflicts ... Ready to build". To add [digihealth](https://github.com/irpina/digihealth) (FAST AUDIO and SYSTEM INFO), install and tick it as well.
 4. **OS version shown**: the 4 characters the unit will show, for example
-   `DS20`.
+   `DS21`.
 5. **BUILD FIRMWARE**, and save the `.syx`. elekloader verifies it before
    writing it.
 
@@ -167,8 +184,8 @@ Or on the command line (elekloader from source):
 
 ```bash
 python -m elekloader.patch --stock Digitakt_OS1.53.syx \
-    --mod core-2.1.elemod --mod digislicer-2.0.elemod \
-    --out Digitakt_OS1.53-slicer.syx --version DS20
+    --mod core-2.1.elemod --mod digislicer-2.1.elemod \
+    --out Digitakt_OS1.53-slicer.syx --version DS21
 ```
 
 **Recovery:** elekloader never changes the bootloader, so the stock OS
@@ -183,15 +200,16 @@ Ubuntu, `apt install binutils-m68k-linux-gnu gcc-m68k-linux-gnu`; on
 Windows, inside WSL) and elekloader:
 
 ```bash
-python -m elekloader.sdk.build . --stock Digitakt_OS1.53.syx       # -> out/digislicer-2.0.elemod
-python -m elekloader.lint out/digislicer-2.0.elemod --stock Digitakt_OS1.53.syx --with core-2.1.elemod
+python -m elekloader.sdk.build . --stock Digitakt_OS1.53.syx       # -> out/digislicer-2.1.elemod
+python -m elekloader.lint out/digislicer-2.1.elemod --stock Digitakt_OS1.53.syx --with core-2.1.elemod
 ```
 
 | file | |
 |---|---|
 | `mod.json` | the mod: its sites, its hook-bus handlers, its resources |
 | `slice.c` | the transient analysis, the slice tables, the +Drive store, the editor |
-| `glue.s` | the DIGISLICER machine (its core descriptor and icon), the patched sites (the SLICE window, GRID's and PLAY's text and icon, the render's PLAY reads, PLAY's and GRID's ranges, the SRC page's key handler) and the handlers |
+| `kbd.c` | the keyboard's trig slice mode: which tracks have it, their slices, the slice lock a key's note gets, recording |
+| `glue.s` | the DIGISLICER machine (its core descriptor and icon), the patched sites (the SLICE window, GRID's and PLAY's text and icon, the render's PLAY reads, PLAY's and GRID's ranges, the SRC page's key handler, the keyboard's slice layout, its notes and their recording) and the handlers |
 | `os153.inc` | the stock routines it calls |
 
 ## How it was checked
@@ -310,6 +328,44 @@ mods through the real bootloader.
     the others): the check's nine screens are identical, pixel for pixel.
     The audio is identical, or 1 ms longer at its silent end: the timing
     effect above.
+  - Not yet tried on a unit.
+- **2.1 (the keyboard's trig slice mode).** In the emulator, from a
+  snapshot of a pattern playing on a SLICE track: track 1 switched to
+  DIGISLICER in the machine menu, GRID set to 32 and SLICE to 5 (and, in
+  another run, left on the keyboard icon), the keyboard turned on with
+  FUNC + TRK.
+  - **The keys:** trig keys 1, 2 and 16 play slices 1, 2 and 16; after UP,
+    trig 16 plays slice 32. Each note reaches the voice with SLICE = 0 and
+    picks its slice by the note, in both runs.
+  - **The LEDs** (what the panel is sent): all 16 keys lit with 32 slices,
+    keys 1, 5, 9 and 13 blue. With the sample's own 6 slices, keys 1-6 lit
+    and 7-16 dark, and trig 7 plays nothing. With AUTO, the keyboard
+    counts AUTO's slices for the track's sample.
+  - **The pages:** UP shows `Slice Page: 2/2`, and a second UP stays on
+    page 2. A page left past the last one (page 2, then a sample with 6
+    slices) reads as page 1: keys 1-6 lit, and UP shows `Slice Page: 1/1`.
+    The keyboard menu shows `SLICE PAGE: 2/2` after UP, and keeps it on a
+    second UP. (Stock firmware, on the same track as SLICE with FOLD off,
+    shows its octave line there.)
+  - **Live recording:** a key recorded during REC + PLAY becomes a trig on
+    the nearest step with a slice lock of its slice and the track's NOTE.
+    The pattern then plays that slice on that step every time round.
+  - **STEP REC:** FUNC + trig 3 records a trig at the cursor with a slice
+    lock of 3.
+  - **Unchanged:** with the keyboard off, trig 9 plays track 9 as on
+    stock. On a ONESHOT track with the keyboard on, the keys keep stock's
+    piano layout (keys 1, 4 and 8 dark) and trig 9 plays note 60, with no
+    slice lock. With the keyboard on, the slice editor's trig keys still
+    audition its slices: only the keyboard's own notes get the slice lock
+    (the firmware's trig preview and a view that plays note 60 use the
+    same note path, and are told apart the same way).
+  - **The patched sites** were checked by a second reader against the
+    firmware's code: the bytes each replaces, nothing branching into them,
+    and every register, flag and stack slot the code after them uses.
+  - **Cold boots against stock** (with core 2.1; with digihealth; with
+    digihealth and digineighbor 0.6): the check's screens are identical,
+    pixel for pixel, and the audio is identical apart from 1 ms at its
+    silent end, as for 2.0.
   - Not yet tried on a unit.
 
 ## Licence

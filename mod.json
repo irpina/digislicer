@@ -1,10 +1,10 @@
 {
- "id": "digislicer", "version": "2.0",
+ "id": "digislicer", "version": "2.1",
  "license": "GPL-2.0-or-later",
  "title": "digislicer", "category": "Sampling", "author": "irpina",
- "description": "A new SRC machine, DIGISLICER: the SLICE machine with a slice editor. Its SRC page is SLICE's; press SRC again for the editor, where you slice the sample where you want (add at a cursor, split, delete, move, auto-slice on transients, equal grids), watch it play and play slices from the trig keys. A sample's own slices play on every DIGISLICER track and are kept per sample on the +Drive (/cfw/slices.a, .b). GRID also gets AUTO (slices on the transients) and PLAY gets PIPO (ping-pong loops). The stock SLICE machine is left as it is.",
+ "description": "A new SRC machine, DIGISLICER: the SLICE machine with a slice editor. Its SRC page is SLICE's; press SRC again for the editor, where you slice the sample where you want (add at a cursor, split, delete, move, auto-slice on transients, equal grids), watch it play and play slices from the trig keys. A sample's own slices play on every DIGISLICER track and are kept per sample on the +Drive (/cfw/slices.a, .b). GRID also gets AUTO (slices on the transients) and PLAY gets PIPO (ping-pong loops). With the keyboard on (FUNC+TRK), the trig keys play the slices, one per key, as the Octatrack's trig slice mode, and live recording records them as slice locks. The stock SLICE machine is left as it is.",
  "device": "digitakt-mk1", "os": "1.53",
- "sources": ["glue.s", "slice.c"],
+ "sources": ["glue.s", "slice.c", "kbd.c"],
  "sites": [
   {"addr": "0x40074df2", "stock": "4fefffe8725e", "op": "jmp", "target": "slice_win"},
   {"addr": "0x4005fa2e", "stock": "202f000c222f0008", "op": "jmp", "target": "grid_fmt"},
@@ -17,7 +17,18 @@
   {"addr": "0x4006060a", "stock": "4feffff4202f0014", "op": "jmp", "target": "play_icon"},
   {"addr": "0x40075282", "stock": "752b00362602", "op": "jsr", "target": "pp_read0"},
   {"addr": "0x400759dc", "stock": "752a00a02602", "op": "jsr", "target": "pp_readv"},
-  {"addr": "0x400760ba", "stock": "302e00364bed0034", "op": "jsr", "target": "pp_read2"}
+  {"addr": "0x400760ba", "stock": "302e00364bed0034", "op": "jsr", "target": "pp_read2"},
+  {"addr": "0x40028f3c", "stock": "4feffff448d70c04", "op": "jmp", "target": "dsl_kbpred"},
+  {"addr": "0x400a16c4", "stock": "4feffff448d70c04", "op": "jmp", "target": "dsl_kbpred2"},
+  {"addr": "0x40029d64", "stock": "123c004bb284", "op": "jsr", "target": "dsl_kblim"},
+  {"addr": "0x4002965a", "stock": "4a06660e7007b0aeffd46d0a103c00546006704b6002707f", "op": "jmp", "target": "dsl_kbled"},
+  {"addr": "0x40025338", "stock": "1028038e6002", "op": "jsr", "target": "dsl_kbpget"},
+  {"addr": "0x40025344", "stock": "4feffff07003", "op": "jmp", "target": "dsl_kbpage"},
+  {"addr": "0x400299b2", "stock": "4879401c2dbd", "op": "jsr", "target": "dsl_kbpfmt"},
+  {"addr": "0x400a2042", "stock": "4879401cfe42", "op": "jsr", "target": "dsl_kbmfmt"},
+  {"addr": "0x400d553e", "stock": "723fb2b94020c29c", "op": "jsr", "target": "dsl_kbnote"},
+  {"addr": "0x40008d40", "stock": "4eb94001c10a", "op": "keep2", "target": "dsl_kbrec"},
+  {"addr": "0x40008904", "stock": "4eb940024942", "op": "keep2", "target": "dsl_kbstep"}
  ],
  "subscribe": [
   {"event": "ev_tick", "fn": "slice_tick", "order": 10},
@@ -29,6 +40,6 @@
   {"to": "core_machines", "order": 50, "data": "00000000", "relocs": [[0, "abs32", "sym:dsl_machine", 0]]}
  ],
  "requires": ["core"],
- "resources": {"names": ["machine:5", "param:SLICE GRID=5", "param:SLICE PLAY=4", "ui:SRC page:SRC twice",
+ "resources": {"names": ["machine:5", "param:SLICE GRID=5", "param:SLICE PLAY=4", "ui:SRC page:SRC twice", "ui:KEYBOARD fold slice",
                          "drive:/cfw/slices.a", "drive:/cfw/slices.b"]}
 }

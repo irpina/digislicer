@@ -395,3 +395,194 @@ dsl_prange_f:                           | from 0x4000f5da: its first argument
         move.l  %d1, 4(%a0)
 9:      move.l  %a0, %d0
         rts
+
+| ---- the keyboard's trig slice mode (kbd.c) ----------------------------------
+| The keyboard's "fold slice" layout: trig key k of slice page p plays note
+| 12 + 16p + k. Its test, 0x40028f3c (the keyboard: its keys, LEDs and
+| UP/DOWN) and the keyboard menu's copy 0x400a16c4, is true on a SLICE
+| track whose SLICE is 0 and FOLD on. On a DIGISLICER track with the
+| keyboard on, kbd.c dsl_kb_check makes it true (and notes the track's
+| slices in dsl_kb_n); anything else runs the stock test. At both entries
+| (was: lea -12(sp),sp ; movem.l d2/a2-a3,(sp), 8 bytes), by jmp. The
+| callers test the result's low byte.
+        .globl  dsl_kbpred, dsl_kbpred2
+dsl_kbpred:
+        jsr     dsl_kb_check
+        tst.l   %d0
+        bne.s   1f
+        lea     -12(%sp), %sp           | the replaced instructions
+        movem.l %d2/%a2-%a3, (%sp)
+        jmp     0x40028f44
+1:      moveq   #1, %d0
+        rts
+dsl_kbpred2:
+        jsr     dsl_kb_check
+        tst.l   %d0
+        bne.s   1f
+        lea     -12(%sp), %sp
+        movem.l %d2/%a2-%a3, (%sp)
+        jmp     0x400a16cc
+1:      moveq   #1, %d0
+        rts
+
+| A trig key's note on the fold slice layout plays if it is at most 75,
+| slice 64 (was: move.b #75,d1 ; cmp.l d4,d1 at 0x40029d64, 6 bytes, by
+| jsr; d4 the note, the flags go to a blt). On DIGISLICER: at most 11 + its
+| slices. Only d1 changes.
+        .globl  dsl_kblim
+dsl_kblim:
+        moveq   #75, %d1
+        tst.l   dsl_kb_n
+        beq.s   1f
+        moveq   #11, %d1
+        add.l   dsl_kb_n, %d1
+1:      cmp.l   %d4, %d1
+        rts
+
+| The keyboard's LEDs (its draw, 0x4002965a-0x40029671, 24 bytes, by jmp;
+| d6 the fold slice test): d0 = the highest note a key may have and be
+| lit, 75 on the fold slice layout, else 84 on an audio track and 127 on a
+| MIDI one, then 0x40029672. On DIGISLICER: 11 + its slices, and d5, which
+| makes every d5-th key light blue (the fold slice layout: 4 << GRID, where
+| its notes wrap), is 4.
+        .globl  dsl_kbled
+dsl_kbled:
+        tst.b   %d6
+        bne.s   2f
+        moveq   #7, %d0                 | the replaced instructions
+        cmp.l   -44(%fp), %d0
+        blt.s   1f
+        moveq   #84, %d0
+        jmp     0x40029672
+1:      moveq   #127, %d0
+        jmp     0x40029672
+2:      moveq   #75, %d0
+        tst.l   dsl_kb_n
+        beq.s   3f
+        moveq   #11, %d0
+        add.l   dsl_kb_n, %d0
+        moveq   #4, %d5
+3:      jmp     0x40029672
+
+| The slice page's setter 0x40025344(trk, page), from UP/DOWN in the
+| keyboard and in its menu, straight after the fold slice test (was: lea
+| -16(sp),sp ; moveq #3,d0, 6 bytes, by jmp). It refuses a page past 3, and
+| -1. On DIGISLICER a page past the last slice's goes to that page
+| (kbd.c dsl_kb_page): UP stays on the last page.
+        .globl  dsl_kbpage
+dsl_kbpage:
+        move.l  8(%sp), -(%sp)
+        jsr     dsl_kb_page
+        addq.l  #4, %sp
+        move.l  %d0, 8(%sp)
+        lea     -16(%sp), %sp           | the replaced instructions
+        moveq   #3, %d0
+        jmp     0x4002534a
+
+| The slice page's getter 0x40025314(trk) reads the page byte at +910 of
+| the pattern track's data (was: move.b 910(a0),d0 ; bra.s 0x40025340 at
+| 0x40025338, 6 bytes, by jsr). The keyboard, its menu and UP/DOWN read it
+| straight after the fold slice test. On DIGISLICER a page past the last
+| slice's reads as that page: a pattern track keeps its page when its
+| sample changes to one with fewer slices. d0 and d1 change.
+        .globl  dsl_kbpget
+dsl_kbpget:
+        moveq   #0, %d0
+        move.b  910(%a0), %d0
+        tst.l   dsl_kb_n
+        beq.s   1f
+        move.l  dsl_kb_n, %d1           | the last page: (slices - 1) >> 4
+        subq.l  #1, %d1
+        asr.l   #4, %d1
+        cmp.l   %d1, %d0
+        ble.s   1f
+        move.l  %d1, %d0
+1:      move.l  #0x40025340, (%sp)      | past the stock's other branch
+        rts
+
+| UP/DOWN's popup, "Slice Page: %d/4" (was: pea 0x401c2dbd at 0x400299b2,
+| 6 bytes, by jsr): kbd.c dsl_kb_pfmt gives its format, which counts
+| DIGISLICER's own pages. d0, d1, a0 and a1 change.
+        .globl  dsl_kbpfmt
+dsl_kbpfmt:
+        jsr     dsl_kb_pfmt
+        movea.l (%sp), %a0
+        move.l  %d0, (%sp)
+        jmp     (%a0)
+
+| The keyboard menu's line "  SLICE PAGE: %d/4" (was: pea 0x401cfe42 at
+| 0x400a2042, 6 bytes, by jsr), the same way; a0 holds the text routine
+| the menu calls next, so it is kept. d0, d1 and a1 change.
+        .globl  dsl_kbmfmt
+dsl_kbmfmt:
+        move.l  %a0, -(%sp)
+        jsr     dsl_kb_mfmt
+        movea.l (%sp)+, %a0
+        move.l  (%sp), %d1              | the return
+        move.l  %d0, (%sp)              | the format, where pea put it
+        movea.l %d1, %a1
+        jmp     (%a1)
+
+| NOTEON 0x400d53dc(track, note, vel, src, ...) gives the voice it starts
+| the preview step's locks, when 0x4020c29c is a step (<= 63; was: moveq
+| #63,d1 ; cmp.l 0x4020c29c,d1 at 0x400d553e, 8 bytes, by jsr; the flags go
+| to a bcs past it). kbd.c dsl_kb_noteon gives a trig key's note on
+| DIGISLICER (the keyboard's call, told by NOTEON's return address) a lock
+| of SLICE = 0 instead, so the note picks its slice. d2 the track, d3 the
+| note, a6 the frame, a4 and a3 the audio voice flags. Only d1 changes, as
+| it did.
+        .globl  dsl_kbnote
+dsl_kbnote:
+        lea     -12(%sp), %sp
+        movem.l %d0/%a0-%a1, (%sp)
+        move.l  %a3, -(%sp)
+        move.l  %a4, -(%sp)
+        move.l  %fp, -(%sp)
+        move.l  %d3, -(%sp)
+        move.l  %d2, -(%sp)
+        jsr     dsl_kb_noteon
+        lea     20(%sp), %sp
+        movem.l (%sp), %d0/%a0-%a1
+        lea     12(%sp), %sp
+        moveq   #63, %d1                | the replaced instructions
+        cmp.l   0x4020c29c, %d1
+        rts
+
+| Live recording: the UI's note message handler records a note with
+| 0x4001c10a(app, track, note, vel, first, step, micro, b, -1) (was: jsr
+| 0x4001c10a at 0x40008d40, by keep2; a2 the message). Here it records it,
+| then kbd.c dsl_kb_rec turns a trig key's note on DIGISLICER into a SLICE
+| lock. d0 is its result.
+        .globl  dsl_kbrec
+dsl_kbrec:
+        move.l  36(%sp), -(%sp)         | its nine arguments again
+        move.l  36(%sp), -(%sp)
+        move.l  36(%sp), -(%sp)
+        move.l  36(%sp), -(%sp)
+        move.l  36(%sp), -(%sp)
+        move.l  36(%sp), -(%sp)
+        move.l  36(%sp), -(%sp)
+        move.l  36(%sp), -(%sp)
+        move.l  36(%sp), -(%sp)
+        jsr     0x4001c10a
+        lea     36(%sp), %sp
+        move.l  %d0, -(%sp)
+        move.l  %a2, -(%sp)
+        jsr     dsl_kb_rec
+        addq.l  #4, %sp
+        move.l  (%sp)+, %d0
+        rts
+
+| STEP REC: 0x400088b6(ctx, step, vel) sets the cursor step's NOTE with
+| 0x40024942(trk, step, note) (was: jsr 0x40024942 at 0x40008904, by keep2;
+| a2 = ctx: its +0 points to the track, +4 is the note message).
+| kbd.c dsl_kb_stepnote(trk, step, note, ctx) sets it, or a SLICE lock.
+        .globl  dsl_kbstep
+dsl_kbstep:
+        move.l  %a2, -(%sp)             | ctx
+        move.l  16(%sp), -(%sp)         | note
+        move.l  16(%sp), -(%sp)         | step
+        move.l  16(%sp), -(%sp)         | trk
+        jsr     dsl_kb_stepnote
+        lea     16(%sp), %sp
+        rts
