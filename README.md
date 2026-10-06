@@ -65,6 +65,11 @@ stock OS file and the mods you pick; nothing from Elektron is distributed.
 - **On stock firmware,** or a build without digislicer, a DIGISLICER track
   loads as ONESHOT: the Digitakt turns machines it doesn't know into
   ONESHOT.
+- **It leaves room for other mods.** Of the 128 KB of RAM that elekloader's
+  mods share, digislicer takes about 15 KB. Its slice tables and its copy of
+  the slices on the +Drive (70 KB) are on the Digitakt's own heap, which
+  has megabytes free, from the first time a DIGISLICER track plays or the
+  editor opens.
 
 **From 1.x:** SLICE tracks that used your own slices, AUTO or PIPO play as
 stock SLICE now. Switch them to DIGISLICER (FUNC + SRC): your slices are
@@ -155,7 +160,7 @@ You need three things:
     release with core 2.1, and for OS 1.54 elekloader 0.4.0 or later.
 - **This mod**, from
   [this repository's releases](https://github.com/irpina/digislicer/releases/latest):
-  `digislicer-2.1.elemod` for OS 1.53, `digislicer-2.1-os1.54.elemod` for
+  `digislicer-2.2.elemod` for OS 1.53, `digislicer-2.2-os1.54.elemod` for
   OS 1.54. They are the same mod.
 - **The stock OS file** your unit runs: `Digitakt_OS1.54.syx` or
   `Digitakt_OS1.53.syx`, from
@@ -171,7 +176,7 @@ Then build your OS in elekloader's window:
 3. **Tick digislicer.** core is ticked with it. The check below the list should
    say "No conflicts ... Ready to build". To add [digihealth](https://github.com/irpina/digihealth) (FAST AUDIO and SYSTEM INFO), install and tick it as well.
 4. **OS version shown**: the 4 characters the unit will show, for example
-   `DS21`.
+   `DS22`.
 5. **BUILD FIRMWARE**, and save the `.syx`. elekloader verifies it before
    writing it.
 
@@ -188,8 +193,8 @@ Or on the command line (elekloader from source):
 
 ```bash
 python -m elekloader.patch --stock Digitakt_OS1.54.syx \
-    --mod core-2.1-os1.54.elemod --mod digislicer-2.1-os1.54.elemod \
-    --out Digitakt_OS1.54-slicer.syx --version DS21
+    --mod core-2.1-os1.54.elemod --mod digislicer-2.2-os1.54.elemod \
+    --out Digitakt_OS1.54-slicer.syx --version DS22
 ```
 
 **Recovery:** elekloader never changes the bootloader, so the stock OS
@@ -204,9 +209,9 @@ Ubuntu, `apt install binutils-m68k-linux-gnu gcc-m68k-linux-gnu`; on
 Windows, inside WSL) and elekloader:
 
 ```bash
-python -m elekloader.sdk.build . --stock Digitakt_OS1.53.syx       # -> out/digislicer-2.1.elemod
-python -m elekloader.sdk.build . --stock Digitakt_OS1.54.syx       # -> out/digislicer-2.1-os1.54.elemod
-python -m elekloader.lint out/digislicer-2.1-os1.54.elemod --stock Digitakt_OS1.54.syx --with core-2.1-os1.54.elemod
+python -m elekloader.sdk.build . --stock Digitakt_OS1.53.syx       # -> out/digislicer-2.2.elemod
+python -m elekloader.sdk.build . --stock Digitakt_OS1.54.syx       # -> out/digislicer-2.2-os1.54.elemod
+python -m elekloader.lint out/digislicer-2.2-os1.54.elemod --stock Digitakt_OS1.54.syx --with core-2.1-os1.54.elemod
 ```
 
 | file | |
@@ -391,6 +396,30 @@ mods through the real bootloader.
     on 1.54: the same code, with addresses found again in 1.54 (each
     by its own bytes and by the code that calls it). Not yet tried on
     a unit.
+- **2.2 (15 KB of the mods' RAM instead of 92 KB).** The slice tables,
+  the copy of the store and the two analyses moved to the Digitakt's heap,
+  and the C code is compiled for size (`-Os`): the code went from 16.4 KB
+  to 12.5 KB and the data from 75.8 KB to 2.9 KB. With core, digihealth
+  and digineighbor, the four mods take 49,232 of the 131,072 bytes instead
+  of 125,976. What it does is unchanged. Against 2.1, in the emulator:
+  - **The editor tests:** the arrow, cursor and vertical zoom tests give
+    exactly 2.1's results, frame for frame. The editor and menu tests give
+    the same slices, splits, deletions, tables and stored records; only
+    knob A's and D's steps differ where the emulator groups knob notches
+    by the UI's timing, stock's own SRC page included.
+  - **The store:** an edit is saved to the +Drive, and loaded back the
+    same after the copy in RAM is wiped.
+  - **The keyboard's trig slice mode** and **PIPO** (the sawtooth test on
+    tracks 1 and 2): the same results.
+  - **A script** that picks DIGISLICER, sets GRID to AUTO and PLAY to
+    PIPO, opens the editor, uses the keyboard's trig slice mode and plays
+    the pattern, on 1.53 and on 1.54: every screen and the audio are the
+    same as 2.1's, and 1.54's screens are 1.53's.
+  - **Cold boots against stock** (1.53: with core, with digihealth, with
+    digihealth and digineighbor; 1.54: with core, and with all four):
+    every screen is identical, and the audio is identical or 1 ms longer
+    at its silent end.
+  - Not yet tried on a unit.
 
 ## Licence
 

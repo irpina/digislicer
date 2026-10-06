@@ -48,3 +48,4 @@
 #define OS_PFMT         0x401c2dbd   /* "Slice Page: %d/4" */
 #define OS_MFMT         0x401cfe42   /* "  SLICE PAGE: %d/4" */
 #define OS_KB_CALL      0x40028bb4   /* NOTEON's return in the keyboard's call */
+#define OS_OP_NEW       0x400d4180   /* operator new(size) -> d0, 0 if the heap is full */
