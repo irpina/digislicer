@@ -55,9 +55,11 @@ volatile u8 slc_any;               /* set by any SLICE voice (slice_win): until 
                                       SLICE track runs with the stock timing */
 volatile u8 slc_cust[SLOTS];       /* the slot's table is the sample's own slice
                                       list: SLICE voices play it whatever GRID says */
-u32 slc_pts[SLOTS][MAXSL];         /* slice starts, ascending, in samples */
-static u32 slc_key[SLOTS][3];      /* PCM address, length, hash last seen */
+u32 (*slc_pts)[MAXSL];             /* [SLOTS]: slice starts, ascending, in samples */
+static u32 (*slc_key)[3];          /* [SLOTS]: PCM address, length, hash last seen */
 static u8 slc_stale[SLOTS];        /* the sample changed since it was analysed */
+/* slc_pts, slc_key, the store's image (slc_img) and the two analyses (job,
+ * ed_an) are on the firmware's heap: see slc_mem. */
 
 /* ---- the store of custom slice points ------------------------------------ */
 #define NREC      128
@@ -79,8 +81,8 @@ struct slc_file {
     struct slc_rec rec[NREC];
     u8 pad[16];
 };
-struct slc_file slc_img;
-#define slc_store (slc_img.rec)
+struct slc_file *slc_img;
+#define slc_store (slc_img->rec)
 volatile u32 slc_store_dirty;      /* changed since it was saved */
 
 static struct slc_rec *store_find(u32 hash, u32 len)
@@ -148,8 +150,8 @@ u32 slc_saves, slc_save_fail;      /* counts, for the USB PEEK */
 
 static u32 img_sum(void)
 {
-    const u32 *w = (const u32 *)slc_img.rec;
-    u32 n = sizeof slc_img.rec / 4, s = 0x5eed1234u, i;
+    const u32 *w = (const u32 *)slc_img->rec;
+    u32 n = sizeof slc_img->rec / 4, s = 0x5eed1234u, i;
     for (i = 0; i < n; i++)
         s = ((s << 5) | (s >> 27)) ^ w[i];
     return s;
@@ -167,10 +169,10 @@ static s32 img_read(const char *path)
     s32 got;
     if (EK_OPEN(path, "r", &f) != 0)
         return 0;
-    got = EK_READ(&slc_img, sizeof slc_img, &f);
+    got = EK_READ(slc_img, sizeof *slc_img, &f);
     EK_CLOSE(&f);
-    return got >= (s32)(sizeof slc_img - sizeof slc_img.pad) && slc_img.magic == SLC_MAGIC
-           && slc_img.nrec == NREC && slc_img.sum == img_sum();
+    return got >= (s32)(sizeof *slc_img - sizeof slc_img->pad) && slc_img->magic == SLC_MAGIC
+           && slc_img->nrec == NREC && slc_img->sum == img_sum();
 }
 
 /* Load the store: the valid file with the higher seq, else an empty one.
@@ -182,9 +184,9 @@ static s32 store_load(void)
     if (!ek_ready())
         return 0;
     ok0 = img_read(slc_path[0]);
-    seq0 = slc_img.seq;
+    seq0 = slc_img->seq;
     ok1 = img_read(slc_path[1]);             /* slc_img now holds file 1 */
-    seq1 = slc_img.seq;
+    seq1 = slc_img->seq;
     if (ok0 && ok1)
         pick = seq1 > seq0 ? 1 : 0;
     else
@@ -193,11 +195,11 @@ static s32 store_load(void)
         pick = -1;
     if (pick < 0) {                          /* none: start empty */
         for (k = 0; k < NREC; k++)
-            slc_img.rec[k].n = 0;
-        slc_img.seq = 0;
+            slc_img->rec[k].n = 0;
+        slc_img->seq = 0;
     }
-    slc_img.magic = SLC_MAGIC;
-    slc_img.nrec = NREC;
+    slc_img->magic = SLC_MAGIC;
+    slc_img->nrec = NREC;
     slc_loaded = 1;
     return 1;
 }
@@ -206,7 +208,7 @@ static s32 store_load(void)
 static s32 store_save(void)
 {
     ekfile f;
-    u32 ino, seq = slc_img.seq + 1;
+    u32 ino, seq = slc_img->seq + 1;
     s32 r, w;
     if (!ek_ready())
         return 0;
@@ -215,15 +217,15 @@ static s32 store_save(void)
     EK_UNLOCK(EK_MUTEX);
     if (r == 0x19 && EK_MKDIR("/cfw") != 0)
         return -1;
-    slc_img.magic = SLC_MAGIC;
-    slc_img.nrec = NREC;
-    slc_img.seq = seq;
-    slc_img.sum = img_sum();
+    slc_img->magic = SLC_MAGIC;
+    slc_img->nrec = NREC;
+    slc_img->seq = seq;
+    slc_img->sum = img_sum();
     if (EK_OPEN(slc_path[seq & 1], "w", &f) != 0)
         return -1;
-    w = EK_WRITE(&slc_img, sizeof slc_img, &f);
+    w = EK_WRITE(slc_img, sizeof *slc_img, &f);
     EK_CLOSE(&f);
-    return w == (s32)sizeof slc_img ? 1 : -1;
+    return w == (s32)sizeof *slc_img ? 1 : -1;
 }
 
 /* From slice_tick: load on first use, save a second after the last edit. */
@@ -272,8 +274,40 @@ struct an {
     u32 cand_pos[MAXCAND];
     s32 cand_str[MAXCAND];
 };
-static struct an job;              /* the background analysis */
+static struct an *job;             /* the background analysis */
+static struct an *ed_an;           /* the editor's (synchronous) analysis */
 static u32 scan;                   /* the next slot slice_tick looks at */
+
+/* The big tables (70 KB) live on the firmware's heap, a 16 MB buddy
+ * allocator with some 13.5 MB free, not in the 128 KB all mods share.
+ * slc_mem allocates them, zeroed, the first time the UI task needs them
+ * (slice_tick, the editor), and keeps them. The render reads a slot's table
+ * only once slc_n[slot] is set, so never before. Returns 0 if the heap had
+ * no room: nothing is sliced then, and it is tried again next time. */
+#define OP_NEW ((u32 (*)(u32))OS_OP_NEW)
+static s32 slc_mem(void)
+{
+    struct mem {
+        struct slc_file img;
+        u32 pts[SLOTS][MAXSL];
+        u32 key[SLOTS][3];
+        struct an job, ed_an;
+    } *m;
+    u32 *w, i;
+    if (slc_img)
+        return 1;
+    m = (struct mem *)OP_NEW(sizeof *m);
+    if (!m)
+        return 0;
+    for (w = (u32 *)m, i = 0; i < sizeof *m / 4; i++)
+        w[i] = 0;
+    slc_pts = m->pts;
+    slc_key = m->key;
+    job = &m->job;
+    ed_an = &m->ed_an;
+    slc_img = &m->img;                       /* last: set means all are */
+    return 1;
+}
 
 static inline s32 absv(s32 x) { return x < 0 ? -x : x; }
 
@@ -454,7 +488,7 @@ void slice_tick(u8 *ctrl)
 #ifdef SLICE_NOTICK
     return;                                  /* test builds: no analysis */
 #endif
-    if (!slc_any)
+    if (!slc_any || !slc_mem())
         return;
     if (ed_is_open()) {
         slc_ui_tick();                       /* the editor's knobs (their dead zone) */
@@ -477,11 +511,11 @@ void slice_tick(u8 *ctrl)
         slc_key[n][2] = hash;
         slc_stale[n] = 1;
     }
-    if (job.active) {
-        if (an_step(&job, BUDGET)) {
-            u32 pts[MAXSL], cnt = an_table(&job, pts);
-            publish(job.slot, job.key, cnt, pts);
-            job.active = 0;
+    if (job->active) {
+        if (an_step(job, BUDGET)) {
+            u32 pts[MAXSL], cnt = an_table(job, pts);
+            publish(job->slot, job->key, cnt, pts);
+            job->active = 0;
         }
         return;
     }
@@ -509,7 +543,7 @@ void slice_tick(u8 *ctrl)
         if (!slc_want[s])
             continue;                        /* stays stale: analysed if AUTO asks */
         slc_stale[s] = 0;
-        an_start(&job, s, slc_key[s][0], slc_key[s][1], slc_key[s][2]);
+        an_start(job, s, slc_key[s][0], slc_key[s][1], slc_key[s][2]);
         return;
     }
 }
@@ -705,7 +739,6 @@ struct slc_ed {
                                       start, until LEVEL moves it */
 };
 struct slc_ed slc_ed;
-static struct an ed_an;            /* the editor's (synchronous) analysis */
 
 static s32 ed_is_open(void)
 {
@@ -714,11 +747,11 @@ static s32 ed_is_open(void)
 
 static void ed_auto_table(void)
 {
-    an_start(&ed_an, slc_ed.slot, slc_ed.pcm, slc_ed.len, slc_ed.hash);
-    while (!an_step(&ed_an, 1u << 20))
+    an_start(ed_an, slc_ed.slot, slc_ed.pcm, slc_ed.len, slc_ed.hash);
+    while (!an_step(ed_an, 1u << 20))
         ;
-    ed_an.active = 0;
-    slc_ed.n = an_table(&ed_an, slc_ed.pts);
+    ed_an->active = 0;
+    slc_ed.n = an_table(ed_an, slc_ed.pts);
 }
 
 static void ed_peaks(void)
@@ -1288,8 +1321,8 @@ void slc_ui_srcpost(void *view)
     }
     if (MACHINE(view) != DSL_MACHINE || !SUBPAGE(view))
         return;
-    if (!slc_loaded && !store_load()) {
-        SUBPAGE(view) = 0;                   /* the drive is busy: not now */
+    if (!slc_mem() || (!slc_loaded && !store_load())) {
+        SUBPAGE(view) = 0;                   /* no room, or the drive is busy: not now */
         return;
     }
     slot = *(const s32 *)((const u8 *)view + 524);  /* the SLICE waveform's slot */

@@ -1,10 +1,11 @@
 {
- "id": "digislicer", "version": "2.1",
+ "id": "digislicer", "version": "2.2",
  "license": "GPL-2.0-or-later",
  "title": "digislicer", "category": "Sampling", "author": "irpina",
  "description": "A new SRC machine, DIGISLICER: the SLICE machine with a slice editor. Its SRC page is SLICE's; press SRC again for the editor, where you slice the sample where you want (add at a cursor, split, delete, move, auto-slice on transients, equal grids), watch it play and play slices from the trig keys. A sample's own slices play on every DIGISLICER track and are kept per sample on the +Drive (/cfw/slices.a, .b). GRID also gets AUTO (slices on the transients) and PLAY gets PIPO (ping-pong loops). With the keyboard on (FUNC+TRK), the trig keys play the slices, one per key, as the Octatrack's trig slice mode, and live recording records them as slice locks. The stock SLICE machine is left as it is.",
  "device": "digitakt-mk1", "os": "1.53",
  "sources": ["glue.s", "slice.c", "kbd.c"],
+ "cflags": ["-Os"],
  "sites": [
   {"addr": "0x40074df2", "stock": "4fefffe8725e", "op": "jmp", "target": "slice_win"},
   {"addr": "0x4005fa2e", "stock": "202f000c222f0008", "op": "jmp", "target": "grid_fmt"},
@@ -33,7 +34,7 @@
  "ports": {
   "1.54": {
    "defsym": {"OS154": "1"},
-   "cflags": ["-DOS154"],
+   "cflags": ["-Os", "-DOS154"],
    "sites": [
     {"addr": "0x40074df2", "stock": "4fefffe8725e", "op": "jmp", "target": "slice_win"},
     {"addr": "0x4005fa2e", "stock": "202f000c222f0008", "op": "jmp", "target": "grid_fmt"},
