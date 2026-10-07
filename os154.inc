@@ -32,9 +32,6 @@
         .equ SRCKEY,       0x4003b272    | the SRC page's consumeKeyEvent
         .equ SPRINTF,      0x40000e82    | sprintf(buffer, format, ...)
         .equ FMT_S,        0x401d0d7e    | "%s"
-        .equ PRANGE,       0x40078f0c    | a parameter's range: (id), a0 the result's place
-        .equ PARAM_VT,     0x4017ee58    | the SRC page's parameter object's vtable
-        .equ SNDREF_VT,    0x40181630    | the vtable of the object at its +16
         .equ VOICE_SLOT,   0x8000ee20    | V(v) + 0x5C: a voice's sample slot
         .equ SLICE_WIN_ON, 0x40074df8    | the SLICE window function, past its site
         .equ PLAY_FMT_ON,  0x4005f924    | PLAY's formatter, past its site

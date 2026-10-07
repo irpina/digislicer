@@ -7,6 +7,7 @@
         .else                           | the Digitakt mk1 1.53
         .include "os153.inc"
         .endif
+        .include "digitakt-mk1/core3.inc"
 
         .section .run, "ax"
 
@@ -17,11 +18,27 @@
 | (the sample's own slices, AUTO, PIPO, the editor) is for DIGISLICER
 | tracks only: core_track_machine[t] tells them apart. The stock SLICE
 | machine is left as stock has it.
+|
+| Its page (core 3.0, drawn by machine-pages: docs/ADAPTING.md "Machine
+| pages") is SLICE's, with PLAY and GRID one step further on a DIGISLICER
+| track, to PIPO and AUTO: stock's ranges are 0-3 and 0-4 (default 3 and
+| 0), on OS 1.53 and 1.54 alike.
         .equ    DSL_ID, 5
         .balign 4
         .globl  dsl_machine
 dsl_machine:
-        .long   DSL_ID, str_dsl, str_dsl_short, dsl_icon, 3, 3
+        CM_MACHINE DSL_ID, str_dsl, str_dsl_short, dsl_icon, 3, 3, dsl_page
+        .balign 4
+dsl_page:
+        CM_UI   3                                       | SLICE's page
+        CM_KNOB                                         | A: TUNE
+        CM_KNOB flags=CM_RANGE, min=0, max=0x400        | B: PLAY, to PIPO
+        CM_KNOB                                         | C: BR
+        CM_KNOB                                         | D: SAMP
+        CM_KNOB                                         | E: SLICE
+        CM_KNOB                                         | F: LEN
+        CM_KNOB flags=CM_RANGE, min=0, max=0x500        | G: GRID, to AUTO
+        CM_KNOB                                         | H: LEV
 | Its menu icon, 11 x 7 as the stock ones (a word a column, rows in bits
 | 31-25): SLICE's ramps, between slice lines at unequal places.
 |   #..#....#..
@@ -344,58 +361,6 @@ ed_srckey:
         jsr     slc_ui_srcpost
         addq.l  #4, %sp
         move.l  (%sp)+, %d0
-        rts
-
-| A parameter's range: 0x40078f0c(id), a0 the result's place, copies its
-| {min, max, default} from the parameter table and returns that place. On
-| the SRC page a knob steps its value within that range (0x4000f534, in
-| 0x4000f50a, for list parameters such as PLAY and GRID) or scales its turn
-| into it (0x400100c4, in the page's parameter setter 0x40010026); the
-| value must then pass the parameter object's check (slot 9, 0x40011576 ->
-| 0x4000f5da: min <= value <= max, its range got through a2, 0x4000f5fc);
-| and the setter clamps to it (0x4000ff20, in 0x4000fef6). These four come
-| here, by keep2. On a DIGISLICER track, PLAY and GRID go one step
-| further, to PIPO and AUTO; SLICE keeps stock's range. The page's
-| parameter object (vtable 0x4017eb58) is in a2 at the three calls, and
-| 0x4000f5da's first argument at the fourth; it reaches its track's sound
-| as obj[16][16] (the object at +16 has vtable 0x40181330, whose slot 10
-| returns its +16). Any other object gets stock's range.
-        .equ    P_PLAY, 0x85
-        .equ    P_GRID, 0x8a
-        .globl  dsl_prange, dsl_prange_f
-dsl_prange:                             | the object in a2
-        movea.l %a2, %a1
-        bra.s   1f
-dsl_prange_f:                           | from 0x4000f5da: its first argument
-        movea.l 36(%sp), %a1
-1:      move.l  %a1, -(%sp)             | the object
-        move.l  %a0, -(%sp)             | the result's place
-        move.l  12(%sp), -(%sp)         | the id
-        jsr     PRANGE
-        addq.l  #4, %sp
-        movea.l (%sp)+, %a0
-        movea.l (%sp)+, %a1
-        move.l  4(%sp), %d1             | the id
-        cmpi.l  #P_PLAY, %d1
-        beq.s   2f
-        cmpi.l  #P_GRID, %d1
-        bne.s   9f
-2:      move.l  (%a1), %d1
-        cmpi.l  #PARAM_VT, %d1
-        bne.s   9f
-        movea.l 16(%a1), %a1
-        move.l  (%a1), %d1
-        cmpi.l  #SNDREF_VT, %d1
-        bne.s   9f
-        movea.l 16(%a1), %a1            | the sound
-        moveq   #0, %d1
-        move.b  126(%a1), %d1           | its machine
-        subq.l  #DSL_ID, %d1
-        bne.s   9f
-        move.l  4(%a0), %d1             | the max, one step on: PIPO, AUTO
-        addi.l  #0x100, %d1
-        move.l  %d1, 4(%a0)
-9:      move.l  %a0, %d0
         rts
 
 | ---- the keyboard's trig slice mode (kbd.c) ----------------------------------

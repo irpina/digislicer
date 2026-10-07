@@ -10,6 +10,12 @@ It is an [elekloader](https://github.com/irpina/elekloader) mod for OS
 1.53 and 1.54, a file for each. elekloader builds a custom OS file on your own machine, from your
 stock OS file and the mods you pick; nothing from Elektron is distributed.
 
+**2.3 needs core 3.0 and elekloader's machine-pages mod**, which draws the
+SRC page from what DIGISLICER describes (PLAY and GRID one step further, to
+PIPO and AUTO). That is what lets it share a build with the other machines
+built that way: SOPHIE, NEIGHBOR 0.7 and Digi Mono. For core 2.1, use 2.2:
+it does the same.
+
 ## What it does
 
 - **The DIGISLICER machine.** Pick it as any machine: FUNC + SRC, then
@@ -59,9 +65,10 @@ stock OS file and the mods you pick; nothing from Elektron is distributed.
     as the Digitakt keeps PLAY across machines. So a PIPO track keeps
     showing PIPO, and plays it as FWD, until you turn PLAY.
 - **Kits keep it.** A project saved with DIGISLICER tracks loads back with
-  them. It needs core 2.1, which holds the machine slots that
+  them. It needs core 2.1 or later, which holds the machine slots that
   DIGISLICER and other added machines (such as
-  [digineighbor](https://github.com/irpina/digineighbor)'s NEIGHBOR) share.
+  [digineighbor](https://github.com/irpina/digineighbor)'s NEIGHBOR) share;
+  2.3 needs core 3.0.
 - **On stock firmware,** or a build without digislicer, a DIGISLICER track
   loads as ONESHOT: the Digitakt turns machines it doesn't know into
   ONESHOT.
@@ -155,12 +162,13 @@ You need three things:
     you also need core 2.1 for your OS, `core-2.1.elemod` (1.53) or
     `core-2.1-os1.54.elemod` (1.54), which are attached to this
     repository's releases too.
-  - digislicer 2.0 and later need **core 2.1** or later (its machine
-    slots). The Windows app builds with the core it bundles, so it needs a
-    release with core 2.1, and for OS 1.54 elekloader 0.4.0 or later.
+  - digislicer 2.3 needs **core 3.0** and **machine-pages**, from
+    elekloader's releases; 2.0 to 2.2 need core 2.1 (its machine slots).
+    The Windows app builds with the cores it bundles and takes 3.0 when
+    you tick 2.3.
 - **This mod**, from
   [this repository's releases](https://github.com/irpina/digislicer/releases/latest):
-  `digislicer-2.2.elemod` for OS 1.53, `digislicer-2.2-os1.54.elemod` for
+  `digislicer-2.3.elemod` for OS 1.53, `digislicer-2.3-os1.54.elemod` for
   OS 1.54. They are the same mod.
 - **The stock OS file** your unit runs: `Digitakt_OS1.54.syx` or
   `Digitakt_OS1.53.syx`, from
@@ -193,8 +201,9 @@ Or on the command line (elekloader from source):
 
 ```bash
 python -m elekloader.patch --stock Digitakt_OS1.54.syx \
-    --mod core-2.1-os1.54.elemod --mod digislicer-2.2-os1.54.elemod \
-    --out Digitakt_OS1.54-slicer.syx --version DS22
+    --mod core-3.0-os1.54.elemod --mod machine-pages-1.0-os1.54.elemod \
+    --mod digislicer-2.3-os1.54.elemod \
+    --out Digitakt_OS1.54-slicer.syx --version DS23
 ```
 
 **Recovery:** elekloader never changes the bootloader, so the stock OS
@@ -209,9 +218,10 @@ Ubuntu, `apt install binutils-m68k-linux-gnu gcc-m68k-linux-gnu`; on
 Windows, inside WSL) and elekloader:
 
 ```bash
-python -m elekloader.sdk.build . --stock Digitakt_OS1.53.syx       # -> out/digislicer-2.2.elemod
-python -m elekloader.sdk.build . --stock Digitakt_OS1.54.syx       # -> out/digislicer-2.2-os1.54.elemod
-python -m elekloader.lint out/digislicer-2.2-os1.54.elemod --stock Digitakt_OS1.54.syx --with core-2.1-os1.54.elemod
+python -m elekloader.sdk.build . --stock Digitakt_OS1.53.syx       # -> out/digislicer-2.3.elemod
+python -m elekloader.sdk.build . --stock Digitakt_OS1.54.syx       # -> out/digislicer-2.3-os1.54.elemod
+python -m elekloader.lint out/digislicer-2.3-os1.54.elemod --stock Digitakt_OS1.54.syx \
+    --with core-3.0-os1.54.elemod --with machine-pages-1.0-os1.54.elemod
 ```
 
 | file | |
@@ -219,7 +229,7 @@ python -m elekloader.lint out/digislicer-2.2-os1.54.elemod --stock Digitakt_OS1.
 | `mod.json` | the mod: its sites, its hook-bus handlers, its resources; under `ports`, 1.54's sites |
 | `slice.c` | the transient analysis, the slice tables, the +Drive store, the editor |
 | `kbd.c` | the keyboard's trig slice mode: which tracks have it, their slices, the slice lock a key's note gets, recording |
-| `glue.s` | the DIGISLICER machine (its core descriptor and icon), the patched sites (the SLICE window, GRID's and PLAY's text and icon, the render's PLAY reads, PLAY's and GRID's ranges, the SRC page's key handler, the keyboard's slice layout, its notes and their recording) and the handlers |
+| `glue.s` | the DIGISLICER machine (its core descriptor, icon and page: PLAY's and GRID's ranges), the patched sites (the SLICE window, GRID's and PLAY's text and icon, the render's PLAY reads, the SRC page's key handler, the keyboard's slice layout, its notes and their recording) and the handlers |
 | `os153.inc`, `os154.inc` | the stock routines and data `glue.s` uses, for each OS (1.54's port defines `OS154`) |
 | `os153.h`, `os154.h` | the same for `slice.c` and `kbd.c` |
 
@@ -420,6 +430,17 @@ mods through the real bootloader.
     every screen is identical, and the audio is identical or 1 ms longer
     at its silent end.
   - Not yet tried on a unit.
+- **2.3 (core 3.0's machine pages).** PLAY's and GRID's ranges are in
+  DIGISLICER's descriptor, and elekloader's machine-pages applies them, in
+  place of its four range hooks. Against 2.2 on core 2.1, with NEIGHBOR in
+  both, in the emulator: the menu, the page, GRID to AUTO, PLAY to PIPO,
+  the editor, the keyboard's trig slice mode and the pattern playing give
+  every screen the same, but the menu, where DIGISLICER now has its icon
+  (core 2.1 drew only the first added machine's); the audio is identical
+  apart from its silent end. In a build with NEIGHBOR 0.7 and SOPHIE too,
+  its screens are the same as without them. On a unit (OS 1.54), in a
+  build of core 3.0 and machine-pages with NEIGHBOR 0.7, SOPHIE, Digi Mono,
+  Digi Poly and digihealth: it worked.
 
 ## Licence
 
