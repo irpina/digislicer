@@ -560,12 +560,12 @@ u64 slice_auto_window(const s8 *p, u32 note, u32 len, s32 v)
     u32 slot = *(const volatile u8 *)(VOICE_SLOT + 94 * v);
     s32 n = slc_n[slot], sel = (u8)p[8], k, L = p[10], idx;
     u32 from, to;
-    extern volatile s32 slc_aud_voice, slc_aud_slice;
+    extern s8 slc_aud_lat[8];
     extern void slc_dbg_win(s32 v, s32 sel, s32 aud);
-    s32 aud = slc_aud_voice == v;
-    if (aud) {                             /* the editor's audition: while a trig */
-        sel = slc_aud_slice % n + 1;       /* key is held, every start of that */
-        L = 0;                             /* track's voice plays its slice */
+    s32 aud = (u32)v < 8 && slc_aud_lat[v] >= 0;
+    if (aud) {                             /* the editor's audition: the slice the */
+        sel = slc_aud_lat[v] % n + 1;      /* voice's note started on (slc_aud_of) */
+        L = 0;
     }
     slc_dbg_win(v, sel, aud);
     /* SLICE 1..: slice (SLICE - 1) wrapped to the slices found, where the
@@ -1182,7 +1182,8 @@ s32 slc_ed_col(u32 pos)
 /* Opened by pressing SRC on a DIGISLICER track's SRC page (slc_ui_srcpost,
  * from our wrapper of the SRC page's key handler): the page's waveform
  * view. While it is open the main loop's key and encoder events come here
- * first and most go no further (glue.s slc_key / slc_enc, slc_ui_key), and
+ * first, and the editor's own go no further (glue.s slc_key / slc_enc,
+ * slc_ui_key, slc_ui_enc); any other key closes it and goes on, and
  * slc_draw draws it over the whole screen after the views have drawn.
  *
  *   encoder A  select a slice        YES      the menu: ADD SLICE HERE (at
@@ -1195,7 +1196,8 @@ s32 slc_ed_col(u32 pos)
  *              slice 1-16 (UP/DOWN: 17-32, ...)
  *   LEFT/RIGHT the previous/next slice, played while held
  *   FUNC+LEFT/RIGHT the previous/next sample (the track's SAMP)
- *                                    PLAY, STOP  work as ever
+ *   encoders E-G  the SRC page's     PLAY, STOP  work as ever
+ *              (SLICE, LEN, GRID)    others      close it and work as ever
  *
  * Edits are played at once (the slot's table is republished), and on NO
  * they are kept per sample in the store (slc_store) for every project. */
@@ -1217,22 +1219,34 @@ typedef s32 (*machine_t)(void *view);
 #define NOTEOFF  ((noteoff_t)OS_NOTEOFF)
 #define MACHINE  ((machine_t)OS_MACHINE)    /* the SRC page's machine: 3 = SLICE */
 
+#define K_FUNC  1
 #define K_YES   12
 #define K_NO    13
 #define K_UP    14
 #define K_DOWN  15
 #define K_LEFT  16
 #define K_RIGHT 17
-#define K_TRIG  19
 #define K_SRC   20
-#define K_FLTR  21
-#define K_AMP   22
-#define K_LFO   23
 #define K_TRIG1 24
 #define DSL_MACHINE 5                      /* DIGISLICER (glue.s dsl_machine) */
 
 volatile s32 slc_aud_voice = -1;   /* while set, every start of this voice plays ... */
 volatile s32 slc_aud_slice;        /* ... this slice (slice_auto_window) */
+s8 slc_aud_lat[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };   /* each voice's (slc_aud_of) */
+
+/* From slice_win, every block a DIGISLICER voice renders: the slice its note
+ * auditions, -1 for none. It is decided when the voice starts and kept for
+ * the note, since the render asks for the window every block: a trig key let
+ * go before its slice ends leaves the slice playing on, not SLICE's (it
+ * jumped to slice 1). */
+s32 slc_aud_of(s32 v)
+{
+    if ((u32)v >= 8)
+        return -1;
+    if (PP_TRIG >> v & 1)
+        slc_aud_lat[v] = slc_aud_voice == v ? (s8)slc_aud_slice : -1;
+    return slc_aud_lat[v];
+}
 
 /* ---- diagnostics, read over USB (PEEK): the last 32 of each ------------------- */
 struct slc_dbg {
@@ -1454,20 +1468,23 @@ static void menu_key(s32 key)
     }
 }
 
-/* A key while the editor is open -> 1 if the editor takes it.
+/* A key while the editor is open -> 1 if the editor takes it. It takes only
+ * its own: YES, NO, the arrows and the trig keys.
  * - SRC goes on to the SRC page, which steps back to its parameters
- *   (slc_ui_srcpost then closes the editor); FUNC+SRC closes it first and
- *   goes on to the machine menu.
- * - TRIG, FLTR, AMP and LFO close it and go on to their pages.
- * - Everything else is the editor's. */
+ *   (slc_ui_srcpost then closes the editor).
+ * - PLAY and STOP (glue.s) and FUNC go on, the editor staying open.
+ * - Any other key closes it and goes on, so it does what it does on the
+ *   SRC page: TRIG, FLTR, AMP, LFO, FUNC+SRC, the menus go to their pages;
+ *   BANK, PTN, TRK and RECORD get the trig keys that follow; FUNC+TRK
+ *   turns the keyboard on or off. */
 s32 slc_ui_key(const u8 *ev)
 {
     s32 key = *(const s32 *)(ev + 12), fl = *(const s32 *)(ev + 16);
     s32 press = (fl & 1) && !(fl & 8), func = fl & 2;
     slc_dbg.key[slc_dbg.key_i++ & 31] = ((u32)key << 16) | (fl & 0xffff);
-    if (key == K_SRC && !func)
+    if ((key == K_SRC && !func) || key == K_FUNC)
         return 0;
-    if (key == K_SRC || key == K_TRIG || key == K_FLTR || key == K_AMP || key == K_LFO) {
+    if ((key < K_YES || key > K_RIGHT) && (key < K_TRIG1 || key >= K_TRIG1 + 16)) {
         if (fl & 1)
             ed_leave();
         return 0;
@@ -1597,11 +1614,15 @@ static s32 enc_counts(s32 enc, s32 d, s32 cap)
     return st;
 }
 
-void slc_ui_enc(const u8 *ev)
+/* A turn while the editor is open -> 1 if the editor takes it: A-D, H and
+ * LEVEL. E, F and G go on to the SRC page (SLICE, LEN, GRID). */
+s32 slc_ui_enc(const u8 *ev)
 {
     s32 enc = *(const s32 *)(ev + 12), d = *(const s32 *)(ev + 16);
     s32 steps;
     slc_dbg.enc[slc_dbg.enc_i++ & 31] = ((u32)enc << 24) | ((u32)d & 0xffffff);
+    if (enc < 1 || enc > 9 || (enc >= 5 && enc <= 7))
+        return 0;
     if (enc == 1)
         steps = KNOB_FILTER(knob_st, ev, KNOB_NOTCH);
     else if (enc == 4 || enc == 8 || enc == 9)
@@ -1616,10 +1637,10 @@ void slc_ui_enc(const u8 *ev)
             if (menu_sel > menu_n - 1)
                 menu_sel = menu_n - 1;
         }
-        return;
+        return 1;
     }
     if (!steps)
-        return;
+        return 1;
     switch (enc) {
     case 1:
         slc_ed_select(steps);
@@ -1642,6 +1663,7 @@ void slc_ui_enc(const u8 *ev)
         slc_ed_cursor(steps);
         break;
     }
+    return 1;
 }
 
 /* The screen, y = 0 at the bottom. The font is 4 pixels a character, so a

@@ -10,7 +10,7 @@ It is an [elekloader](https://github.com/irpina/elekloader) mod for OS
 1.53 and 1.54, a file for each. elekloader builds a custom OS file on your own machine, from your
 stock OS file and the mods you pick; nothing from Elektron is distributed.
 
-**2.3 needs core 3.0 and elekloader's machine-pages mod**, which draws the
+**2.3 and 2.4 need core 3.0 and elekloader's machine-pages mod**, which draws the
 SRC page from what DIGISLICER describes (PLAY and GRID one step further, to
 PIPO and AUTO). That is what lets it share a build with the other machines
 built that way: SOPHIE, NEIGHBOR 0.7 and Digi Mono. For core 2.1, use 2.2:
@@ -68,7 +68,7 @@ it does the same.
   them. It needs core 2.1 or later, which holds the machine slots that
   DIGISLICER and other added machines (such as
   [digineighbor](https://github.com/irpina/digineighbor)'s NEIGHBOR) share;
-  2.3 needs core 3.0.
+  2.3 and later need core 3.0.
 - **On stock firmware,** or a build without digislicer, a DIGISLICER track
   loads as ONESHOT: the Digitakt turns machines it doesn't know into
   ONESHOT.
@@ -91,6 +91,7 @@ still on the +Drive and play there at once.
 | knob C | move its start by single samples |
 | knob D | zoom horizontally, smoothly, around the cursor: turn it faster to zoom faster |
 | knob H | zoom vertically, up to 64 times taller, to see quiet parts |
+| knobs E, F, G | SLICE, LEN and GRID, as on the SRC page |
 | LEVEL | move the cursor; the waveform scrolls with it |
 | LEFT / RIGHT | previous / next slice, played while held |
 | trig keys | select slice 1-16 and play it while held (UP / DOWN: 17-32, 33-48, 49-64) |
@@ -99,8 +100,8 @@ still on the +Drive and play there at once.
 | FUNC + YES | AUTO SLICE |
 | **YES** | **the slice menu** |
 | NO, SRC | close (the slices are kept): back to the SRC page |
-| TRIG, FLTR, AMP, LFO | close, and go to that page |
-| PLAY, STOP | work as ever |
+| PLAY, STOP, FUNC | work as ever; the editor stays open |
+| any other key | closes the editor and does what it does on the SRC page: TRIG, FLTR, AMP, LFO and the menus (SETTINGS, SAMPLE, ...) go to their pages; PTN, BANK and TRK pick a pattern, bank or track; RECORD records; FUNC + TRK turns the keyboard on or off |
 
 **The cursor** works as the Octatrack's waveform marker. It is an I-beam
 on the waveform.
@@ -162,13 +163,13 @@ You need three things:
     you also need core 2.1 for your OS, `core-2.1.elemod` (1.53) or
     `core-2.1-os1.54.elemod` (1.54), which are attached to this
     repository's releases too.
-  - digislicer 2.3 needs **core 3.0** and **machine-pages**, from
+  - digislicer 2.3 and later need **core 3.0** and **machine-pages**, from
     elekloader's releases; 2.0 to 2.2 need core 2.1 (its machine slots).
     The Windows app builds with the cores it bundles and takes 3.0 when
-    you tick 2.3.
+    you tick 2.4.
 - **This mod**, from
   [this repository's releases](https://github.com/irpina/digislicer/releases/latest):
-  `digislicer-2.3.elemod` for OS 1.53, `digislicer-2.3-os1.54.elemod` for
+  `digislicer-2.4.elemod` for OS 1.53, `digislicer-2.4-os1.54.elemod` for
   OS 1.54. They are the same mod.
 - **The stock OS file** your unit runs: `Digitakt_OS1.54.syx` or
   `Digitakt_OS1.53.syx`, from
@@ -202,8 +203,8 @@ Or on the command line (elekloader from source):
 ```bash
 python -m elekloader.patch --stock Digitakt_OS1.54.syx \
     --mod core-3.0-os1.54.elemod --mod machine-pages-1.0-os1.54.elemod \
-    --mod digislicer-2.3-os1.54.elemod \
-    --out Digitakt_OS1.54-slicer.syx --version DS23
+    --mod digislicer-2.4-os1.54.elemod \
+    --out Digitakt_OS1.54-slicer.syx --version DS24
 ```
 
 **Recovery:** elekloader never changes the bootloader, so the stock OS
@@ -218,9 +219,9 @@ Ubuntu, `apt install binutils-m68k-linux-gnu gcc-m68k-linux-gnu`; on
 Windows, inside WSL) and elekloader:
 
 ```bash
-python -m elekloader.sdk.build . --stock Digitakt_OS1.53.syx       # -> out/digislicer-2.3.elemod
-python -m elekloader.sdk.build . --stock Digitakt_OS1.54.syx       # -> out/digislicer-2.3-os1.54.elemod
-python -m elekloader.lint out/digislicer-2.3-os1.54.elemod --stock Digitakt_OS1.54.syx \
+python -m elekloader.sdk.build . --stock Digitakt_OS1.53.syx       # -> out/digislicer-2.4.elemod
+python -m elekloader.sdk.build . --stock Digitakt_OS1.54.syx       # -> out/digislicer-2.4-os1.54.elemod
+python -m elekloader.lint out/digislicer-2.4-os1.54.elemod --stock Digitakt_OS1.54.syx \
     --with core-3.0-os1.54.elemod --with machine-pages-1.0-os1.54.elemod
 ```
 
@@ -441,6 +442,27 @@ mods through the real bootloader.
   its screens are the same as without them. On a unit (OS 1.54), in a
   build of core 3.0 and machine-pages with NEIGHBOR 0.7, SOPHIE, Digi Mono,
   Digi Poly and digihealth: it worked.
+- **2.4 (the editor's keys, and a trig key let go early).** Two fixes in
+  the editor, reported on a unit:
+  - It took every key but TRIG, FLTR, AMP, LFO, PLAY and STOP, so
+    nothing else worked while it was open. Now it takes only its own
+    keys and knobs; any other key closes it and does what it does on the
+    SRC page, and knobs E, F and G set SLICE, LEN and GRID.
+  - A trig key let go before its slice ended made the note go on from
+    slice 1 (the window, asked for every block, read SLICE again). The
+    slice is now kept for the note.
+
+  In the emulator, against 2.3, on 1.53 and 1.54: FUNC + TRK (the
+  keyboard on), SETTINGS and back, PTN + trig 2 (pattern A02), BANK, TRK +
+  trig 2 (track 2), RECORD, SONG, SAMPLE, TEMPO, FLTR and FUNC + SRC (the
+  machine menu) each close the editor and work as on the SRC page, where
+  2.3 swallowed them; FUNC + NO still deletes a slice, knob E moves SLICE
+  where 2.3 left it, and the editor's own keys (trig keys, UP, YES's menu,
+  RIGHT, PLAY and STOP, NO) give the same screens as 2.3. Trig 3 tapped
+  for 80 ms plays slice 3 and stops at its end, 0.86 s, the same audio as
+  the key held through (correlation 1.00, quieter after the note-off),
+  where 2.3 played on to 1.56 s; the next note on that track, from the
+  keyboard, plays as SLICE says. 1.54's screens are 1.53's.
 
 ## Licence
 

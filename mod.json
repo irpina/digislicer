@@ -1,5 +1,5 @@
 {
- "id": "digislicer", "version": "2.3",
+ "id": "digislicer", "version": "2.4",
  "license": "GPL-2.0-or-later",
  "title": "digislicer", "category": "Sampling", "author": "irpina",
  "description": "A new SRC machine, DIGISLICER: the SLICE machine with a slice editor. Its SRC page is SLICE's; press SRC again for the editor, where you slice the sample where you want (add at a cursor, split, delete, move, auto-slice on transients, equal grids), watch it play and play slices from the trig keys. A sample's own slices play on every DIGISLICER track and are kept per sample on the +Drive (/cfw/slices.a, .b). GRID also gets AUTO (slices on the transients) and PLAY gets PIPO (ping-pong loops). With the keyboard on (FUNC+TRK), the trig keys play the slices, one per key, as the Octatrack's trig slice mode, and live recording records them as slice locks. The stock SLICE machine is left as it is. Its page is drawn by machine-pages (core 3.0), so it combines with the other machines that describe theirs.",
