@@ -114,6 +114,9 @@ slice_win:
 win_body:
         moveq   #1, %d0                 | any SLICE voice wakes slice_tick
         move.b  %d0, slc_any
+        move.l  16(%sp), -(%sp)         | slc_aud_of(v): the editor's audition,
+        jsr     slc_aud_of              | as the voice's note started
+        addq.l  #4, %sp
         move.l  16(%sp), %d0            | the voice
         mulu.w  #94, %d0
         lea     VOICE_SLOT, %a1         | V(v) + 0x5C: its sample slot
@@ -131,9 +134,10 @@ win_body:
         move.b  12(%a0), %d0
         cmpi.b  #5, %d0
         beq.s   7f
-        move.l  slc_aud_voice, %d0      | the slice editor auditions this voice
-        cmp.l   16(%sp), %d0
-        bne.s   9f
+        move.l  16(%sp), %d0            | the slice editor auditions this
+        lea     slc_aud_lat, %a1        | voice's note
+        tst.b   0(%a1,%d0.l)
+        bmi.s   9f
 7:      jmp     slice_auto_window
 8:      movea.l 4(%sp), %a0             | no table yet: an AUTO voice asks for
         move.b  12(%a0), %d0            | one, and plays the 64 grid meanwhile
@@ -332,14 +336,17 @@ slc_key:
         move.b  %d0, 0x60(%a0)
         bra.s   8f
 
-| slc_enc(brain, event) -> 1 when the editor is open: it takes every turn.
+| slc_enc(brain, event) -> 1 when the open editor takes the turn: all but
+| E, F and G (slc_ui_enc).
 slc_enc:
         tst.l   slc_ed
         beq.s   8f
         move.l  8(%sp), -(%sp)
         jsr     slc_ui_enc
         addq.l  #4, %sp
-7:      movea.l 4(%sp), %a0             | redraw: the view controller's dirty
+        tst.l   %d0
+        beq.s   8f
+7:      movea.l 4(%sp), %a0            | redraw: the view controller's dirty
         moveq   #1, %d0                 | byte (brain + 0x40 + 0x20)
         move.b  %d0, 0x60(%a0)
         rts
