@@ -3,16 +3,17 @@
 A new SRC machine for the Digitakt (mk1): **DIGISLICER**, the SLICE machine
 with a slice editor. Slice a sample where you want, auto-slice it on its
 transients or on an equal grid, watch it play, and play each slice from
-the sequencer and the trig keys. There is no need to save a sliced copy to
-the +Drive first.
+the sequencer and the trig keys, stretched in time if you like without
+changing its pitch. There is no need to save a sliced copy to the +Drive
+first.
 
 It is an [elekloader](https://github.com/irpina/elekloader) mod for OS
 1.53 and 1.54, a file for each. elekloader builds a custom OS file on your own machine, from your
 stock OS file and the mods you pick; nothing from Elektron is distributed.
 
-**2.3 and 2.4 need core 3.0 and elekloader's machine-pages mod**, which draws the
-SRC page from what DIGISLICER describes (PLAY and GRID one step further, to
-PIPO and AUTO). That is what lets it share a build with the other machines
+**2.3 and later need core 3.0 and elekloader's machine-pages mod**, which draws the
+SRC page from what DIGISLICER describes (in 2.5: PLAY one step further, to
+PIPO, and STRETCH where GRID was). That is what lets it share a build with the other machines
 built that way: SOPHIE, NEIGHBOR 0.7 and Digi Mono. For core 2.1, use 2.2:
 it does the same.
 
@@ -20,27 +21,55 @@ it does the same.
 
 - **The DIGISLICER machine.** Pick it as any machine: FUNC + SRC, then
   DIGISLICER, below SLICE, in the list.
-  - Its SRC page is SLICE's, and it plays everything SLICE plays: GRID,
-    SLICE, LEN, slice locks.
+  - Its SRC page is SLICE's, and it plays everything SLICE plays: SLICE,
+    LEN, slice locks. Knob G is STRETCH instead of GRID (below).
   - Press **SRC again** for its waveform view: the slice editor, on the
     track's sample. SRC, NO or another page key takes you back.
   - The editor opens on the sample's own slices if it has some, and on
     AUTO's otherwise.
 - **Your slices play everywhere.** A sample with its own slices plays them
-  on every DIGISLICER track that uses it, whatever GRID says. SLICE, the
-  keyboard and slice locks pick from them.
+  on every DIGISLICER track that uses it. SLICE, the keyboard and slice
+  locks pick from them.
 - **They are kept.** A second after you close the editor, the slices are
   saved to the +Drive per sample (by content, so they follow the sample into
   every project). They live in `/cfw/slices.a` and `/cfw/slices.b`; a `/cfw`
   folder appears in the sample browser.
-- **GRID = AUTO.** On DIGISLICER, GRID goes one past 64 to AUTO: slices on
-  the sample's transients, for samples with no slices of their own.
+- **AUTO slices otherwise.** A sample with no slices of its own plays
+  AUTO's: slices on its transients, found the first time a DIGISLICER
+  track plays it (an even 16 grid plays until they are ready). For equal
+  slices, the editor's CREATE GRID makes them the sample's own.
+- **STRETCH (knob G).** The slice's length, apart from its pitch: OFF, or
+  a speed from x0.25 (four times as long) through x1.00 to x3.29. 0-7 is
+  OFF; from 8 it goes an octave every 32, x0.50 at 40, x1.00 at 72, x2.00
+  at 104.
+  - The pitch is the slice's as ever (TUNE, its LFO, the note), so at
+    x1.00 TUNE changes the pitch and not the length.
+  - It locks per step and the LFOs reach it, as any SRC parameter.
+  - Hits inside a stretched slice stay in time and are not doubled: a
+    window of several slices (LEN) starts each one when its time comes.
+  - Up to 4 tracks stretch at once; a note that would make a fifth plays
+    unstretched. Stretched playback reads the sample on the main CPU, and
+    four voices at x0.25 add up to a quarter of a block's time to the
+    audio render in its busiest blocks.
+  - Forward PLAY only: FWD.L plays once when stretched, and REV, REV.L
+    and PIPO play unstretched.
+  - It keeps GRID's place in the sound, so a kit saved with an older
+    digislicer (GRID 0-5, AUTO being 5) loads with STRETCH OFF.
+  - How it works: a grid moves through the slice at STRETCH's speed while
+    a read head plays at the slice's pitch; when the head has drifted
+    from the grid, a second head takes over near the grid, its waveform
+    peak lined up with the first's, over a crossfade. The idea of
+    peak-aligned splices and of starting hits on time comes from
+    Heavylight Industries'
+    [capicola](https://github.com/heavylight-industries/capicola)
+    ("Keyframe Time Stretching via Extrema Sampling", DAFx26); the code
+    is digislicer's own, in integers (the Digitakt has no FPU).
 - **PLAY = PIPO.** On DIGISLICER, PLAY goes one past FWD to PIPO, the
   Octatrack's ping-pong loop.
   - The slice plays forward, then backward, then forward again, for as
     long as the note lasts. Each note starts forward.
-  - It works on GRID's slices, AUTO's and your own, and across the slices
-    LEN spans.
+  - It works on AUTO's slices and your own, and across the slices LEN
+    spans.
   - The SRC page shows it as `|<-->|`.
 - **The keyboard plays the slices.** Turn the keyboard on (FUNC + TRK) on
   a DIGISLICER track, and the trig keys work as the Octatrack's trig slice
@@ -91,7 +120,7 @@ still on the +Drive and play there at once.
 | knob C | move its start by single samples |
 | knob D | zoom horizontally, smoothly, around the cursor: turn it faster to zoom faster |
 | knob H | zoom vertically, up to 64 times taller, to see quiet parts |
-| knobs E, F, G | SLICE, LEN and GRID, as on the SRC page |
+| knobs E, F, G | SLICE, LEN and STRETCH, as on the SRC page |
 | LEVEL | move the cursor; the waveform scrolls with it |
 | LEFT / RIGHT | previous / next slice, played while held |
 | trig keys | select slice 1-16 and play it while held (UP / DOWN: 17-32, 33-48, 49-64) |
@@ -146,7 +175,7 @@ backs out.
 - **AUTO SLICE**: slices on the sample's transients.
 - **CREATE GRID <n>**: n equal slices (LEFT / RIGHT: 4, 8, 16, 32, 64),
   each start moved back to a zero crossing.
-- **DELETE ALL**: the sample goes back to plain GRID playback.
+- **DELETE ALL**: the sample goes back to AUTO's slices.
 
 At most 64 slices a sample.
 
@@ -166,10 +195,10 @@ You need three things:
   - digislicer 2.3 and later need **core 3.0** and **machine-pages**, from
     elekloader's releases; 2.0 to 2.2 need core 2.1 (its machine slots).
     The Windows app builds with the cores it bundles and takes 3.0 when
-    you tick 2.4.
+    you tick 2.5.
 - **This mod**, from
   [this repository's releases](https://github.com/irpina/digislicer/releases/latest):
-  `digislicer-2.4.elemod` for OS 1.53, `digislicer-2.4-os1.54.elemod` for
+  `digislicer-2.5.elemod` for OS 1.53, `digislicer-2.5-os1.54.elemod` for
   OS 1.54. They are the same mod.
 - **The stock OS file** your unit runs: `Digitakt_OS1.54.syx` or
   `Digitakt_OS1.53.syx`, from
@@ -203,8 +232,8 @@ Or on the command line (elekloader from source):
 ```bash
 python -m elekloader.patch --stock Digitakt_OS1.54.syx \
     --mod core-3.0-os1.54.elemod --mod machine-pages-1.0-os1.54.elemod \
-    --mod digislicer-2.4-os1.54.elemod \
-    --out Digitakt_OS1.54-slicer.syx --version DS24
+    --mod digislicer-2.5-os1.54.elemod \
+    --out Digitakt_OS1.54-slicer.syx --version DS25
 ```
 
 **Recovery:** elekloader never changes the bootloader, so the stock OS
@@ -219,9 +248,9 @@ Ubuntu, `apt install binutils-m68k-linux-gnu gcc-m68k-linux-gnu`; on
 Windows, inside WSL) and elekloader:
 
 ```bash
-python -m elekloader.sdk.build . --stock Digitakt_OS1.53.syx       # -> out/digislicer-2.4.elemod
-python -m elekloader.sdk.build . --stock Digitakt_OS1.54.syx       # -> out/digislicer-2.4-os1.54.elemod
-python -m elekloader.lint out/digislicer-2.4-os1.54.elemod --stock Digitakt_OS1.54.syx \
+python -m elekloader.sdk.build . --stock Digitakt_OS1.53.syx       # -> out/digislicer-2.5.elemod
+python -m elekloader.sdk.build . --stock Digitakt_OS1.54.syx       # -> out/digislicer-2.5-os1.54.elemod
+python -m elekloader.lint out/digislicer-2.5-os1.54.elemod --stock Digitakt_OS1.54.syx \
     --with core-3.0-os1.54.elemod --with machine-pages-1.0-os1.54.elemod
 ```
 
@@ -230,7 +259,9 @@ python -m elekloader.lint out/digislicer-2.4-os1.54.elemod --stock Digitakt_OS1.
 | `mod.json` | the mod: its sites, its hook-bus handlers, its resources; under `ports`, 1.54's sites |
 | `slice.c` | the transient analysis, the slice tables, the +Drive store, the editor |
 | `kbd.c` | the keyboard's trig slice mode: which tracks have it, their slices, the slice lock a key's note gets, recording |
-| `glue.s` | the DIGISLICER machine (its core descriptor, icon and page: PLAY's and GRID's ranges), the patched sites (the SLICE window, GRID's and PLAY's text and icon, the render's PLAY reads, the SRC page's key handler, the keyboard's slice layout, its notes and their recording) and the handlers |
+| `glue.s` | the DIGISLICER machine (its core descriptor, icon and page: PLAY's range, STRETCH on knob G), the patched sites (the SLICE window, GRID's and PLAY's text and icon, the render's PLAY reads, the SRC page's key handler, the keyboard's slice layout, its notes and their recording) and the handlers |
+| `stretch.c` | STRETCH in the render: on machine-pages' `ev_render_voices` it replaces a stretched track's block, knob G's text, the 4-track limit |
+| `dsl_stretch.c`, `dsl_stretch.h` | the time stretch itself, one voice, in integers |
 | `os153.inc`, `os154.inc` | the stock routines and data `glue.s` uses, for each OS (1.54's port defines `OS154`) |
 | `os153.h`, `os154.h` | the same for `slice.c` and `kbd.c` |
 
@@ -463,6 +494,41 @@ mods through the real bootloader.
   the key held through (correlation 1.00, quieter after the note-off),
   where 2.3 played on to 1.56 s; the next note on that track, from the
   keyboard, plays as SLICE says. 1.54's screens are 1.53's.
+- **2.5 (STRETCH on knob G).**
+  - **How the stretch works:** the stock voice plays the slice as ever,
+    and on machine-pages' render event (order 50) a stretched track's
+    block is replaced with the stretched one. The filter, the AMP
+    envelope, the LFOs and the sends then work on it as on a sample. The
+    voice's pitch is read from the render's own working value (TUNE after
+    locks and LFOs, the note by SLICE's rule, the sample's rate).
+  - **GRID is gone from DIGISLICER:** every DIGISLICER voice plays the
+    sample's own slices or AUTO's, and asks for AUTO's when there are
+    none.
+  - **Prototyped on a computer first,** against capicola's own engine run
+    as a slice player, on a full mix, a chord loop, a drum-and-chord loop,
+    an 808 and a sine sweep, at x0.5 to x1.5 and -7 to +5 semitones.
+    Measured against an ideal stretch, the spectra came out 2.5 dB off
+    where capicola's were 5.4 dB off (its keyframes keep only the
+    extrema).
+  - **Emulator, on 1.53 and 1.54:**
+    - At x1.00 the stretched block matches the stock voice's
+      (correlation 0.999, level within 0.1 dB, 52 samples' latency
+      matched).
+    - An 8,620-sample slice that sounds 178 ms stock sounds 352 ms at
+      x0.51 and 720 ms at x0.25, played to its end after the stock voice
+      has stopped.
+    - Knob G reads OFF and x0.25-x3.29, and the pop-up "Stretch=x0.51".
+    - CREATE LINEAR and RANDOM LOCKS still work with STRETCH set.
+    - With 6 tracks triggered at once, 4 stretch and the rest play stock.
+  - **The emulator's cycle model** of the audio render (period 166,685
+    cycles at 250 MHz), with 8 tracks triggered every 800 ms:
+    - stock: 63.7% at worst;
+    - with 4 of them stretched at x0.25: 73% on average and 87.8% at
+      worst;
+    - without the limit, 8 stretched tracks reached 100.8%.
+    - Each voice's first splice comes at a different moment, at most two
+      splice searches run a block, and the stretch code is built `-O2`.
+  - **On a unit:** the owner tried a test build of it on their Digitakt.
 
 ## Licence
 
