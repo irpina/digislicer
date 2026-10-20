@@ -81,18 +81,19 @@ static const u8 *dsl_sound(u32 app, s32 t)
 }
 
 /* The slices the track plays, as slice_win picks them: the sample's own
- * slices or AUTO's table, else the grid. AUTO with no table yet asks for
- * one (slice_tick) and counts the 64 grid meanwhile, as it plays. */
+ * slices or AUTO's table. With no table yet it asks for one (slice_tick)
+ * and counts the even 16 grid meanwhile, as it plays. (Knob G is STRETCH
+ * on DIGISLICER: there is no GRID to read.) */
 static s32 slices(const u8 *snd)
 {
-    u32 slot = snd[S_SAMP], grid = snd[S_GRID];
-    if (slot < SLOTS && slc_n[slot] && (slc_cust[slot] || grid == 5))
+    u32 slot = snd[S_SAMP];
+    if (slot < SLOTS && slc_n[slot])
         return slc_n[slot];
-    if (grid == 5 && slot < SLOTS) {
+    if (slot < SLOTS) {
         slc_want[slot] = 1;
         slc_any = 1;
     }
-    return 4 << (grid > 4 ? 4 : grid);
+    return 16;
 }
 
 /* The slices of the track the keyboard plays, if it is on and that track

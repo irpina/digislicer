@@ -1,10 +1,10 @@
 {
- "id": "digislicer", "version": "2.4",
+ "id": "digislicer", "version": "2.5",
  "license": "GPL-2.0-or-later",
  "title": "digislicer", "category": "Sampling", "author": "irpina",
- "description": "A new SRC machine, DIGISLICER: the SLICE machine with a slice editor. Its SRC page is SLICE's; press SRC again for the editor, where you slice the sample where you want (add at a cursor, split, delete, move, auto-slice on transients, equal grids), watch it play and play slices from the trig keys. A sample's own slices play on every DIGISLICER track and are kept per sample on the +Drive (/cfw/slices.a, .b). GRID also gets AUTO (slices on the transients) and PLAY gets PIPO (ping-pong loops). With the keyboard on (FUNC+TRK), the trig keys play the slices, one per key, as the Octatrack's trig slice mode, and live recording records them as slice locks. The stock SLICE machine is left as it is. Its page is drawn by machine-pages (core 3.0), so it combines with the other machines that describe theirs.",
+ "description": "A new SRC machine, DIGISLICER: the SLICE machine with a slice editor. Its SRC page is SLICE's; press SRC again for the editor, where you slice the sample where you want (add at a cursor, split, delete, move, auto-slice on transients, equal grids), watch it play and play slices from the trig keys. A sample's own slices play on every DIGISLICER track and are kept per sample on the +Drive (/cfw/slices.a, .b). With no slices of its own a sample plays AUTO's (slices on the transients). Knob G is STRETCH: the slice's length apart from its pitch (OFF, x0.25 to x3.29), lockable and reachable by the LFOs. PLAY gets PIPO (ping-pong loops). With the keyboard on (FUNC+TRK), the trig keys play the slices, one per key, as the Octatrack's trig slice mode, and live recording records them as slice locks. The stock SLICE machine is left as it is. Its page is drawn by machine-pages (core 3.0), so it combines with the other machines that describe theirs.",
  "device": "digitakt-mk1", "os": "1.53",
- "sources": ["glue.s", "slice.c", "kbd.c"],
+ "sources": ["glue.s", "slice.c", "kbd.c", "stretch.c", "dsl_stretch.c"],
  "cflags": ["-Os"],
  "sites": [
   {"addr": "0x40074df2", "stock": "4fefffe8725e", "op": "jmp", "target": "slice_win"},
@@ -58,7 +58,8 @@
   {"event": "ev_tick", "fn": "slice_tick", "order": 10},
   {"event": "ev_draw", "fn": "slc_draw", "order": 90},
   {"event": "ev_key", "fn": "slc_key", "order": 50},
-  {"event": "ev_enc", "fn": "slc_enc", "order": 50}
+  {"event": "ev_enc", "fn": "slc_enc", "order": 50},
+  {"event": "ev_render_voices", "fn": "ts_render", "order": 50}
  ],
  "machines": [{"id": 5, "descriptor": "dsl_machine", "order": 50}],
  "requires": ["core", "machine-pages"],

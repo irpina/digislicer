@@ -20,9 +20,12 @@
 | machine is left as stock has it.
 |
 | Its page (core 3.0, drawn by machine-pages: docs/ADAPTING.md "Machine
-| pages") is SLICE's, with PLAY and GRID one step further on a DIGISLICER
-| track, to PIPO and AUTO: stock's ranges are 0-3 and 0-4 (default 3 and
-| 0), on OS 1.53 and 1.54 alike.
+| pages") is SLICE's, with PLAY one step further, to PIPO (stock's range is
+| 0-3), and STRETCH where GRID was (stretch.c): a DIGISLICER track plays the
+| sample's own slices or AUTO's, so it has no grid to choose. STRETCH keeps
+| GRID's slot in the sound, so it locks and the LFOs reach it; it borrows
+| BR's knob (0-127), and 0-7 is OFF, so a kit saved with GRID 0-5 (5 =
+| AUTO) plays unstretched.
         .equ    DSL_ID, 5
         .balign 4
         .globl  dsl_machine
@@ -37,7 +40,7 @@ dsl_page:
         CM_KNOB                                         | D: SAMP
         CM_KNOB                                         | E: SLICE
         CM_KNOB                                         | F: LEN
-        CM_KNOB flags=CM_RANGE, min=0, max=0x500        | G: GRID, to AUTO
+        CM_KNOB name=str_tstr, lname=str_tstr_long, look=0x86, flags=CM_RANGE+CM_DEFAULT, min=0, max=0x7f00, def=0, fmt=ts_fmt | G: STRETCH
         CM_KNOB                                         | H: LEV
 | Its menu icon, 11 x 7 as the stock ones (a word a column, rows in bits
 | 31-25): SLICE's ramps, between slice lines at unequal places.
@@ -58,6 +61,8 @@ dsl_icon_mask:
         .long   0xfe000000, 0xfe000000, 0xfe000000, 0xfe000000, 0xfe000000
         .long   0xfe000000, 0xfe000000, 0xfe000000, 0xfe000000, 0xfe000000
         .long   0xfe000000
+str_tstr:       .asciz  "STR"
+str_tstr_long:  .asciz  "Stretch"
 str_dsl:        .asciz  "DIGISLICER"
 str_dsl_short:  .asciz  "DSLC"
         .balign 2
@@ -105,7 +110,12 @@ slice_win:
 2:      lea     -24(%sp), %sp           | the replaced instructions
         moveq   #94, %d1
         jmp     SLICE_WIN_ON
-1:      move.l  16(%sp), -(%sp)         | pp_pre(p, v)
+1:      move.l  16(%sp), -(%sp)         | ts_on(v): stretched (stretch.c)
+        jsr     ts_on
+        addq.l  #4, %sp
+        tst.l   %d0
+        bne.w   ts_wing
+        move.l  16(%sp), -(%sp)         | pp_pre(p, v)
         move.l  8(%sp), -(%sp)
         jsr     pp_pre
         addq.l  #8, %sp
@@ -124,29 +134,16 @@ win_body:
         move.b  0(%a1,%d0.l), %d1
         cmpi.l  #128, %d1
         bcc.s   9f
-        lea     slc_n, %a1
-        tst.b   0(%a1,%d1.l)
-        beq.s   8f
-        lea     slc_cust, %a1           | the sample's own slice list: always
-        tst.b   0(%a1,%d1.l)
+        lea     slc_n, %a1              | the sample's own slices or AUTO's:
+        tst.b   0(%a1,%d1.l)            | always (knob G is STRETCH, not GRID)
         bne.s   7f
-        movea.l 4(%sp), %a0             | GRID = AUTO
-        move.b  12(%a0), %d0
-        cmpi.b  #5, %d0
-        beq.s   7f
-        move.l  16(%sp), %d0            | the slice editor auditions this
-        lea     slc_aud_lat, %a1        | voice's note
-        tst.b   0(%a1,%d0.l)
-        bmi.s   9f
-7:      jmp     slice_auto_window
-8:      movea.l 4(%sp), %a0             | no table yet: an AUTO voice asks for
-        move.b  12(%a0), %d0            | one, and plays the 64 grid meanwhile
-        cmpi.b  #5, %d0
-        bne.s   9f
-        lea     slc_want, %a1
-        moveq   #1, %d0
+        lea     slc_want, %a1           | no table yet: ask for AUTO's; the
+        moveq   #1, %d0                 | window is an even 16 grid meanwhile
         move.b  %d0, 0(%a1,%d1.l)
-9:      clr.l   -(%sp)                  | log it (slice.c slc_dbg, over USB):
+7:      jmp     slice_auto_window
+9:      movea.l 4(%sp), %a0             | no sample: the stock path, with GRID
+        clr.b   12(%a0)                 | 0 in the render's copy (not STRETCH)
+        clr.l   -(%sp)                  | log it (slice.c slc_dbg, over USB):
         pea     -1                      | (v, sel -1 = the stock path, 0)
         move.l  24(%sp), -(%sp)
         jsr     slc_dbg_win
@@ -169,6 +166,24 @@ pp_win:
         move.l  %d0, -(%sp)
         move.l  24(%sp), -(%sp)         | v
         jsr     pp_step
+        lea     12(%sp), %sp
+        rts
+
+| A stretched voice (stretch.c ts_on): win_body with the arguments again,
+| then ts_win(v, d0, d1), which keeps the window for ts_render and returns
+| it unchanged: the stock voice plays as ever, and ts_render replaces its
+| track's block. PIPO plays as FWD while a track is stretched.
+ts_wing:
+        move.l  16(%sp), -(%sp)
+        move.l  16(%sp), -(%sp)
+        move.l  16(%sp), -(%sp)
+        move.l  16(%sp), -(%sp)
+        jsr     win_body
+        lea     16(%sp), %sp
+        move.l  %d1, -(%sp)
+        move.l  %d0, -(%sp)
+        move.l  24(%sp), -(%sp)         | v
+        jsr     ts_win
         lea     12(%sp), %sp
         rts
 

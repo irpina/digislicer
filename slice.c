@@ -558,8 +558,10 @@ void slice_tick(u8 *ctrl)
 u64 slice_auto_window(const s8 *p, u32 note, u32 len, s32 v)
 {
     u32 slot = *(const volatile u8 *)(VOICE_SLOT + 94 * v);
-    s32 n = slc_n[slot], sel = (u8)p[8], k, L = p[10], idx;
+    s32 n = slc_n[slot], sel = (u8)p[8], k, L = p[10], idx, even = !n;
     u32 from, to;
+    if (even)                              /* no table yet (AUTO's is coming): */
+        n = 16;                            /* an even 16 grid meanwhile */
     extern s8 slc_aud_lat[8];
     extern void slc_dbg_win(s32 v, s32 sel, s32 aud);
     s32 aud = (u32)v < 8 && slc_aud_lat[v] >= 0;
@@ -581,8 +583,13 @@ u64 slice_auto_window(const s8 *p, u32 note, u32 len, s32 v)
     if (L > 63)
         L = 63;
     idx = k + L + 1;
-    from = slc_pts[slot][k];
-    to = idx >= n ? len : slc_pts[slot][idx < 0 ? 0 : idx];
+    if (even) {
+        from = (len >> 4) * (u32)k;
+        to = idx >= n ? len : (len >> 4) * (u32)idx;
+    } else {
+        from = slc_pts[slot][k];
+        to = idx >= n ? len : slc_pts[slot][idx < 0 ? 0 : idx];
+    }
     if ((u8)p[2] > 1)
         return ((u64)from << 32) | to;
     return ((u64)to << 32) | from;
